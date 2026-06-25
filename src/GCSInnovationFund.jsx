@@ -2,6 +2,7 @@ import { useState } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { useCloudSection } from "./lib/cloud";
+import { supabase } from "./lib/supabase";
 import {
   LayoutGrid, Megaphone, ListChecks, CalendarDays, Users2,
   ArrowRight, Check, Clock, X, Sparkles, GraduationCap,
@@ -353,7 +354,7 @@ function rowsToTeams(rows) {
   const headers = Object.keys(clean[0]);
   const hName = pickCol(headers, /team|project|name|startup|venture/);
   if (!hName) return [];
-  const hBlurb = pickCol(headers, /blurb|descr|summary|pitch|idea|one.?lin|tagline|about/);
+  const hBlurb = pickCol(headers, /blurb|descr|summary|pitch|idea|one.?lin|tagline|about|problem|value|proposition|statement/);
   const hCohort = pickCol(headers, /cohort|call|track|stream|special|theme|stage.?type/);
   const hScore = pickCol(headers, /score|total|rating|eval|points|mark|average/);
   const hFlag = pickCol(headers, /flag|interview.?by|recommend|shortlist|requested|nominat|pick/);
@@ -375,7 +376,7 @@ function rowsToTeams(rows) {
         name,
         blurb: hBlurb ? String(r[hBlurb] ?? "").trim() : "",
         cohort: hCohort ? mapCohort(r[hCohort]) : "regular",
-        flaggedBy: flags.length ? flags : ["Imported"],
+        flaggedBy: flags.length ? flags : [],
         score: Number.isNaN(score) ? null : score,
         stage: mapStage(hStage ? r[hStage] : "", !!date, outcome),
         agreed: hAgreed ? mapAgreed(r[hAgreed]) : "pending",
@@ -719,6 +720,12 @@ export default function App() {
         <div className="sidefoot" style={{ marginTop: "auto", padding: "14px 10px 4px" }}>
           <div className="eyebrow" style={{ marginBottom: 8 }}>Cycle {cycleLabel()}</div>
           <div style={{ fontSize: 12.5, color: T.muted }}>{PHASE_BY_MONTH[CURRENT]}</div>
+          {supabase && (
+            <button onClick={() => supabase.auth.signOut()}
+              style={{ marginTop: 12, fontSize: 12, color: T.muted, background: "none", border: `1px solid ${T.hairline}`, borderRadius: 999, padding: "6px 12px", cursor: "pointer" }}>
+              Sign out
+            </button>
+          )}
         </div>
       </aside>
 
@@ -935,61 +942,67 @@ export default function App() {
               </div>
 
               {selTab === "list" ? (
-                <div className="card" style={{ marginTop: 20, padding: 0, overflow: "hidden" }}>
+                <div className="card" style={{ marginTop: 20, padding: 14 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <div className="eyebrow">{visibleTeams.length} teams · click any field to edit</div>
+                    <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }}
+                      onClick={() => setTeams((ts) => [...ts, { id: (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())), name: "", blurb: "", cohort: "regular", flaggedBy: [], score: "", stage: "flagged", agreed: "pending", date: "", outcome: null }])}>
+                      <Plus size={14} /> Add team
+                    </button>
+                  </div>
                   <div style={{ overflowX: "auto" }}>
                     <table>
                       <thead>
                         <tr>
                           <th>Team</th><th>Cohort</th><th>Flagged by</th><th>Score /{MAX_SCORE}</th>
-                          <th>Agreed?</th><th>Interview</th><th>Outcome</th><th></th>
+                          <th>Agreed?</th><th>Interview</th><th>Outcome</th><th>Next step</th><th></th>
                         </tr>
                       </thead>
                       <tbody>
                         {visibleTeams.map((t) => (
                           <tr key={t.id}>
-                            <td>
-                              <div style={{ fontWeight: 600 }}>{t.name}</div>
-                              <div style={{ color: T.muted, fontSize: 11.5 }}>{t.blurb}</div>
+                            <td style={{ minWidth: 190 }}>
+                              <EInput value={t.name} onChange={(v) => upd(t.id, { name: v })} placeholder="Team name" />
+                              <EInput value={t.blurb} onChange={(v) => upd(t.id, { blurb: v })} placeholder="Short description" />
                             </td>
                             <td>
-                              <Pill bg={t.cohort === "special" ? T.turqTint : T.tint} fg={t.cohort === "special" ? T.turquoise : T.burgundy}>
+                              <button className="mini" onClick={() => upd(t.id, { cohort: t.cohort === "special" ? "regular" : "special" })}
+                                style={{ borderColor: t.cohort === "special" ? T.turquoise : T.tint, color: t.cohort === "special" ? T.turquoise : T.burgundy, whiteSpace: "nowrap" }}>
                                 {t.cohort === "special" ? "Special" : "Regular"}
-                              </Pill>
+                              </button>
                             </td>
-                            <td style={{ color: T.muted, fontSize: 12 }}>{t.flaggedBy.join(" · ")}</td>
+                            <td style={{ minWidth: 130 }}>
+                              <EInput value={(t.flaggedBy || []).join(", ")} onChange={(v) => upd(t.id, { flaggedBy: v.split(/[,;·]/).map((s) => s.trim()).filter(Boolean) })} placeholder="Judges, Program team" />
+                            </td>
                             <td>
                               <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
                                 <input className="scorebox" value={t.score ?? ""} onChange={(e) => { const n = e.target.value.replace(/\D/g, "").slice(0, 2); upd(t.id, { score: n === "" ? "" : Math.min(Number(n), MAX_SCORE) }); }} placeholder="—" />
-                                <span className="mono" style={{ fontSize: 10.5, color: T.muted }}>
-                                  /{MAX_SCORE}{t.score ? ` · ${(Number(t.score) / JUDGES).toFixed(1)}/5 avg` : ""}
-                                </span>
+                                <span className="mono" style={{ fontSize: 10.5, color: T.muted }}>{t.score ? `${(Number(t.score) / JUDGES).toFixed(1)}/5` : ""}</span>
                               </div>
                             </td>
                             <td><button onClick={() => cycleAgreed(t)} title="Click to cycle">{agreedPill(t.agreed)}</button></td>
-                            <td className="mono" style={{ fontSize: 12 }}>
-                              {t.date ? t.date :
-                                <button className="mini" onClick={() => upd(t.id, { date: "Jul 7, 13:00", stage: "scheduled" })}>+ Set date</button>}
+                            <td style={{ minWidth: 118 }}><EInput value={t.date} onChange={(v) => upd(t.id, { date: v })} placeholder="Set date/time" mono /></td>
+                            <td>
+                              <select value={t.outcome ?? ""} onChange={(e) => upd(t.id, { outcome: e.target.value || null })}
+                                style={{ fontFamily: "IBM Plex Mono", fontSize: 12, padding: "5px 7px", border: `1px solid ${T.hairline}`, borderRadius: 8, background: T.surface, color: T.ink }}>
+                                <option value="">Decide…</option>
+                                <option value="select">Selected</option>
+                                <option value="waitlist">Waitlist</option>
+                                <option value="reject">Not selected</option>
+                              </select>
                             </td>
                             <td>
-                              {t.stage === "completed" || t.stage === "decided" ? (
-                                <select value={t.outcome ?? ""} onChange={(e) => upd(t.id, { outcome: e.target.value || null, stage: "decided" })}
-                                  style={{ fontFamily: "IBM Plex Mono", fontSize: 12, padding: "4px 6px", border: `1px solid ${T.hairline}`, borderRadius: 8, background: T.surface, color: T.ink }}>
-                                  <option value="">Decide…</option>
-                                  <option value="select">Selected</option>
-                                  <option value="waitlist">Waitlist</option>
-                                  <option value="reject">Not selected</option>
-                                </select>
-                              ) : outcomePill(t.outcome)}
+                              <select value={t.stage} onChange={(e) => upd(t.id, { stage: e.target.value })}
+                                style={{ fontFamily: "IBM Plex Mono", fontSize: 12, padding: "5px 7px", border: `1px solid ${T.hairline}`, borderRadius: 8, background: T.surface, color: T.ink }}>
+                                {STAGES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+                              </select>
                             </td>
-                            <td>
-                              {t.stage !== "decided" && (
-                                <button className="mini on" onClick={() => advance(t)} title="Advance stage">
-                                  {STAGES[STAGES.findIndex((s) => s.id === t.stage) + 1]?.label} <ArrowRight size={11} style={{ verticalAlign: -1 }} />
-                                </button>
-                              )}
-                            </td>
+                            <td><button onClick={() => setTeams((ts) => ts.filter((x) => x.id !== t.id))} title="Delete team" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button></td>
                           </tr>
                         ))}
+                        {visibleTeams.length === 0 && (
+                          <tr><td colSpan={9} style={{ color: T.muted, fontSize: 13, padding: "16px 4px" }}>No teams yet — drop your Airtable export above, or use “Add team”.</td></tr>
+                        )}
                       </tbody>
                     </table>
                   </div>
