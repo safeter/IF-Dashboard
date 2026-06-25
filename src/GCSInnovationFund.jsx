@@ -460,7 +460,7 @@ const FLAT_CHECK = DEMO_CHECKLIST.flatMap((g, gi) =>
 );
 const CHECK_SEED = (() => {
   const preset = new Set(["0-0", "0-1", "0-2", "0-3", "1-0", "1-1", "2-0", "2-1"]);
-  return Object.fromEntries(FLAT_CHECK.map((i) => [i.id, preset.has(i.id)]));
+  return FLAT_CHECK.map((i) => ({ ...i, done: preset.has(i.id) }));
 })();
 
 /* ============================================================ */
@@ -474,12 +474,13 @@ export default function App() {
   const [teams, setTeams] = useCloudSection("teams", SEED_TEAMS);
   const [alumni, setAlumni] = useCloudSection("alumni", SEED_ALUMNI);
   const [selTab, setSelTab] = useState("list");
+  const [dragId, setDragId] = useState(null);
   const [importedName, setImportedName] = useState(null);
   const [importError, setImportError] = useState(null);
   const [dragging, setDragging] = useState(false);
   const [classes, setClasses] = useCloudSection("classes", CLASSES);
   const [pizza, setPizza] = useCloudSection("pizza", PIZZA);
-  const [checked, setChecked] = useCloudSection("checklist", CHECK_SEED);
+  const [checklist, setChecklist] = useCloudSection("demochecklist", CHECK_SEED);
   const [road, setRoad] = useCloudSection("road", ROAD_TEAMS);
   const [events, setEvents] = useCloudSection("events", CRITICAL);
   const [evDraft, setEvDraft] = useState({ open: false, m: "Sep", label: "", color: PALETTE[2].hex });
@@ -497,6 +498,20 @@ export default function App() {
   const cycleAgreed = (t) => {
     const order = ["pending", "yes", "declined"];
     upd(t.id, { agreed: order[(order.indexOf(t.agreed) + 1) % 3] });
+  };
+  // kanban: move a team to a stage, optionally inserting before another card (for ordering)
+  const moveTeam = (id, targetStage, beforeId) => {
+    setTeams((ts) => {
+      const moving = ts.find((t) => t.id === id);
+      if (!moving) return ts;
+      const without = ts.filter((t) => t.id !== id);
+      const updated = { ...moving, stage: targetStage };
+      if (beforeId) {
+        const idx = without.findIndex((t) => t.id === beforeId);
+        if (idx >= 0) return [...without.slice(0, idx), updated, ...without.slice(idx)];
+      }
+      return [...without, updated];
+    });
   };
 
   const ingest = (rows, fname) => {
@@ -546,7 +561,10 @@ export default function App() {
     setImportedName(null);
     setImportError(null);
   };
-  const toggleCheck = (id) => setChecked((c) => ({ ...c, [id]: !c[id] }));
+  const toggleCheck = (id) => setChecklist((cl) => cl.map((c) => (c.id === id ? { ...c, done: !c.done } : c)));
+  const updCheck = (id, patch) => setChecklist((cl) => cl.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+  const rmCheck = (id) => setChecklist((cl) => cl.filter((c) => c.id !== id));
+  const addCheck = (group) => setChecklist((cl) => [...cl, { id: (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())), group, label: "", owner: "", done: false }]);
   const cycleRoad = (i) => {
     const order = ["notstarted", "progress", "ready"];
     setRoad((r) => r.map((t, j) => (j === i ? { ...t, status: order[(order.indexOf(t.status) + 1) % 3] } : t)));
@@ -667,9 +685,10 @@ export default function App() {
     } else setClassMsg("Use a .csv, .xlsx, or .xls file.");
   };
 
-  const demoDone = FLAT_CHECK.filter((i) => checked[i.id]).length;
-  const demoTotal = FLAT_CHECK.length;
-  const demoPct = Math.round((demoDone / demoTotal) * 100);
+  const demoDone = checklist.filter((c) => c.done).length;
+  const demoTotal = checklist.length;
+  const demoPct = demoTotal ? Math.round((demoDone / demoTotal) * 100) : 0;
+  const demoGroups = [...new Set(checklist.map((c) => c.group))];
 
   const visibleTeams = teams; // skin is a visual lens here; all teams shown, tagged by cohort
   const counts = {
@@ -1008,34 +1027,45 @@ export default function App() {
                   </div>
                 </div>
               ) : (
-                <div className="grid" style={{ gridTemplateColumns: "repeat(6,1fr)", marginTop: 20, gap: 10 }}>
-                  {STAGES.map((s) => {
-                    const items = visibleTeams.filter((t) => t.stage === s.id);
-                    return (
-                      <div key={s.id} className="col">
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                          <span className="eyebrow">{s.label}</span>
-                          <span className="mono" style={{ fontSize: 11, color: T.muted }}>{items.length}</span>
-                        </div>
-                        {items.length === 0 && <div style={{ color: T.muted, fontSize: 11.5, marginTop: 10 }}>Empty</div>}
-                        {items.map((t) => (
-                          <div key={t.id} className="kchip">
-                            <div style={{ fontWeight: 600, fontSize: 13 }}>{t.name}</div>
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 7 }}>
-                              <Pill bg={t.cohort === "special" ? T.turqTint : T.tint} fg={t.cohort === "special" ? T.turquoise : T.burgundy}>
-                                {t.cohort === "special" ? "Special" : "Regular"}
-                              </Pill>
-                              <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>{t.score != null && t.score !== "" ? `${t.score}/${MAX_SCORE}` : "—"}</span>
-                            </div>
-                            {t.stage !== "decided" && (
-                              <button className="mini" style={{ marginTop: 9, width: "100%" }} onClick={() => advance(t)}>Advance →</button>
-                            )}
+                <>
+                  <div className="eyebrow" style={{ marginTop: 18, marginBottom: -4, color: T.muted }}>Drag cards to reorder or move between columns · or use ← →</div>
+                  <div className="grid" style={{ gridTemplateColumns: "repeat(6,1fr)", marginTop: 14, gap: 10 }}>
+                    {STAGES.map((s, si) => {
+                      const items = visibleTeams.filter((t) => t.stage === s.id);
+                      return (
+                        <div key={s.id} className="col"
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={(e) => { e.preventDefault(); if (dragId) moveTeam(dragId, s.id, null); setDragId(null); }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <span className="eyebrow">{s.label}</span>
+                            <span className="mono" style={{ fontSize: 11, color: T.muted }}>{items.length}</span>
                           </div>
-                        ))}
-                      </div>
-                    );
-                  })}
-                </div>
+                          {items.length === 0 && <div style={{ color: T.muted, fontSize: 11.5, marginTop: 10 }}>Drop here</div>}
+                          {items.map((t) => (
+                            <div key={t.id} className="kchip" draggable
+                              onDragStart={() => setDragId(t.id)}
+                              onDragEnd={() => setDragId(null)}
+                              onDragOver={(e) => e.preventDefault()}
+                              onDrop={(e) => { e.preventDefault(); e.stopPropagation(); if (dragId && dragId !== t.id) moveTeam(dragId, t.stage, t.id); setDragId(null); }}
+                              style={{ opacity: dragId === t.id ? 0.4 : 1, cursor: "grab" }}>
+                              <div style={{ fontWeight: 600, fontSize: 13 }}>{t.name || "Untitled"}</div>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 7 }}>
+                                <Pill bg={t.cohort === "special" ? T.turqTint : T.tint} fg={t.cohort === "special" ? T.turquoise : T.burgundy}>
+                                  {t.cohort === "special" ? "Special" : "Regular"}
+                                </Pill>
+                                <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>{t.score != null && t.score !== "" ? `${t.score}/${MAX_SCORE}` : "—"}</span>
+                              </div>
+                              <div style={{ display: "flex", gap: 6, marginTop: 9 }}>
+                                <button className="mini" style={{ flex: 1, opacity: si === 0 ? 0.35 : 1 }} disabled={si === 0} onClick={() => upd(t.id, { stage: STAGES[si - 1].id })}>←</button>
+                                <button className="mini" style={{ flex: 1, opacity: si === STAGES.length - 1 ? 0.35 : 1 }} disabled={si === STAGES.length - 1} onClick={() => upd(t.id, { stage: STAGES[si + 1].id })}>→</button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
               )}
             </>
           )}
@@ -1120,20 +1150,22 @@ export default function App() {
                     <div className="disp" style={{ fontSize: 30, fontWeight: 800, color: accent }}>{demoPct}%</div>
                   </div>
                   <div className="track" style={{ marginTop: 12 }}><div style={{ width: demoPct + "%", background: accent }} /></div>
-                  {DEMO_CHECKLIST.map((g, gi) => (
-                    <div key={gi} style={{ marginTop: 16 }}>
-                      <div className="eyebrow" style={{ marginBottom: 4 }}>{g.group}</div>
-                      {g.items.map((it, ii) => {
-                        const id = `${gi}-${ii}`;
-                        const done = checked[id];
-                        return (
-                          <button key={id} className={"chk" + (done ? " done" : "")} onClick={() => toggleCheck(id)}>
-                            {done ? <CheckCircle2 size={17} style={{ color: accent, flex: "0 0 auto" }} /> : <Circle size={17} style={{ color: T.muted, flex: "0 0 auto" }} />}
-                            <span className="lbl">{it[0]}</span>
-                            <span className="owner">{it[1]}</span>
+                  {demoGroups.map((group) => (
+                    <div key={group} style={{ marginTop: 16 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                        <div className="eyebrow">{group}</div>
+                        <button className="mini" style={{ fontSize: 11 }} onClick={() => addCheck(group)}><Plus size={11} style={{ verticalAlign: -1 }} /> Step</button>
+                      </div>
+                      {checklist.filter((c) => c.group === group).map((c) => (
+                        <div key={c.id} className={"chk" + (c.done ? " done" : "")} style={{ cursor: "default" }}>
+                          <button onClick={() => toggleCheck(c.id)} title="Check off" style={{ flex: "0 0 auto", display: "grid", placeItems: "center" }}>
+                            {c.done ? <CheckCircle2 size={17} style={{ color: accent }} /> : <Circle size={17} style={{ color: T.muted }} />}
                           </button>
-                        );
-                      })}
+                          <EInput value={c.label} onChange={(v) => updCheck(c.id, { label: v })} placeholder="Step" />
+                          <EInput value={c.owner} onChange={(v) => updCheck(c.id, { owner: v })} placeholder="Owner" w="120px" align="right" />
+                          <button onClick={() => rmCheck(c.id)} title="Remove" style={{ flex: "0 0 auto", color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={13} /></button>
+                        </div>
+                      ))}
                     </div>
                   ))}
                 </div>
@@ -1177,28 +1209,27 @@ export default function App() {
                 <div className="mono" style={{ fontSize: 12, color: T.muted }}>{sessions.filter((s) => s.done).length}/{sessions.length} held</div>
               </div>
               <div className="card" style={{ marginTop: 20 }}>
-                <div className="timeline">
+                <div>
                   {sessions.map((s, i) => {
                     const color = s.kind === "milestone" ? accent : s.kind === "community" ? T.gold : s.kind === "meeting" ? T.info : T.muted;
                     return (
-                      <div key={i} style={{ position: "relative", paddingBottom: i === sessions.length - 1 ? 0 : 20 }}>
-                        <span className="tnode" style={{ top: 2, background: s.done ? color : T.surface, borderColor: T.paper, boxShadow: `0 0 0 2px ${color}` }} />
-                        <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
-                          <span className="mono" style={{ fontSize: 12, color: T.muted, width: 52, flex: "0 0 52px" }}>{s.date}</span>
-                          <div style={{ flex: 1, minWidth: 200 }}>
-                            <div style={{ fontWeight: 600, fontSize: 14.5, display: "flex", alignItems: "center", gap: 8 }}>
-                              {s.title}
-                              {s.kind === "milestone" && <Sparkles size={14} style={{ color: accent }} />}
-                            </div>
-                            <div style={{ color: T.muted, fontSize: 12.5, marginTop: 2 }}>{s.who}</div>
-                          </div>
-                          <button onClick={() => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, done: !x.done } : x)))}
-                            className="chk" style={{ width: "auto", borderBottom: "none", padding: 0, gap: 7 }} title="Mark held">
-                            {s.done ? <CheckCircle2 size={18} style={{ color: T.ok }} /> : <Circle size={18} style={{ color: T.muted }} />}
-                            <span style={{ fontSize: 12, color: s.done ? T.ok : T.muted, fontWeight: 600 }}>{s.done ? "Held" : "Upcoming"}</span>
-                          </button>
-                          <button onClick={() => setSessions((ss) => ss.filter((_, j) => j !== i))} title="Remove session" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button>
+                      <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "10px 0", borderBottom: i === sessions.length - 1 ? "none" : `1px solid ${T.hairline}` }}>
+                        <span style={{ width: 12, height: 12, borderRadius: 999, background: s.done ? color : T.surface, boxShadow: `0 0 0 2px ${color}`, marginTop: 9, flex: "0 0 12px" }} />
+                        <div style={{ width: 72, flex: "0 0 72px" }}>
+                          <EInput value={s.date} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, date: v } : x)))} placeholder="Date" mono />
                         </div>
+                        <div style={{ flex: 1, minWidth: 160 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <EInput value={s.title} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, title: v } : x)))} placeholder="Session title" />
+                            {s.kind === "milestone" && <Sparkles size={14} style={{ color: accent, flex: "0 0 auto" }} />}
+                          </div>
+                          <EInput value={s.who} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, who: v } : x)))} placeholder="Speaker" />
+                        </div>
+                        <button onClick={() => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, done: !x.done } : x)))}
+                          className="mini" style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap", borderColor: s.done ? T.ok : T.hairline, color: s.done ? T.ok : T.muted }} title="Mark held">
+                          {s.done ? <CheckCircle2 size={14} /> : <Circle size={14} />}{s.done ? "Held" : "Upcoming"}
+                        </button>
+                        <button onClick={() => setSessions((ss) => ss.filter((_, j) => j !== i))} title="Remove session" style={{ marginTop: 8, color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button>
                       </div>
                     );
                   })}
