@@ -56,19 +56,7 @@ function Gate() {
   if (!ready) return null;
   if (supabaseConfigured && !session) return <Login />;
 
-  return (
-    <>
-      {supabaseConfigured && (
-        <button
-          onClick={() => supabase.auth.signOut()}
-          style={{ position: "fixed", top: 12, right: 14, zIndex: 50, fontSize: 12, color: "#6E6E6E", background: "#fff", border: "1px solid #ECE7E1", borderRadius: 999, padding: "5px 12px", cursor: "pointer", fontFamily: "Inter, system-ui, sans-serif" }}
-        >
-          Sign out
-        </button>
-      )}
-      <App />
-    </>
-  );
+  return <App />;
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<Gate />);
