@@ -1,13 +1,14 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
-import { useCloudSection } from "./lib/cloud";
+import { useCloudSection, useSaveStatus, retryFailedSaves, writeRows, deleteCycleData } from "./lib/cloud";
 import { supabase } from "./lib/supabase";
 import {
-  LayoutGrid, Megaphone, ListChecks, CalendarDays, Users2,
-  ArrowRight, Check, Clock, X, Sparkles, GraduationCap,
+  LayoutGrid, Megaphone, ListChecks, CalendarDays,
+  Check, Clock, X, Sparkles, GraduationCap,
   UploadCloud, RefreshCw, CalendarCheck, Trophy, Pizza,
   CheckCircle2, Circle, Search, Award, Plus, Trash2, Pencil,
+  ChevronDown, Download, Upload, Settings, AlertTriangle, Users, BookOpen, Copy,
 } from "lucide-react";
 
 /* ============================================================
@@ -46,7 +47,7 @@ const STYLE = `
 .navitem:hover{background:${T.paper};color:${T.ink}}
 .navitem.on{background:var(--accent);color:#fff}
 .navitem.on svg{color:#fff}
-.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;position:relative}
 .topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;
   padding:18px 34px;border-bottom:1px solid ${T.hairline};background:${T.paper};
   position:sticky;top:0;z-index:5}
@@ -86,13 +87,18 @@ tr:last-child td{border-bottom:none}
   border-radius:11px;padding:3px}
 .tabs button{padding:6px 13px;border-radius:8px;font-size:13px;font-weight:600;color:${T.muted}}
 .tabs button.on{background:var(--accent);color:#fff}
-.timeline{position:relative;padding-left:26px}
-.timeline:before{content:"";position:absolute;left:7px;top:6px;bottom:6px;width:2px;background:${T.hairline}}
-.tnode{position:absolute;left:0;width:16px;height:16px;border-radius:50%;border:3px solid ${T.paper}}
 .swim{display:flex;align-items:center;gap:14px}
 .track{flex:1;height:9px;border-radius:999px;background:${T.hairline};overflow:hidden}
 .track>div{height:100%;border-radius:999px;background:var(--accent)}
+.utilbtn{display:none}
+.savechip{display:inline-flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;
+  font-size:11px;color:${T.muted};white-space:nowrap}
+.utilpanel{position:absolute;right:16px;top:60px;z-index:20;background:${T.surface};
+  border:1px solid ${T.hairline};border-radius:14px;padding:12px;min-width:230px;
+  box-shadow:0 8px 24px rgba(0,0,0,.08)}
+@media(min-width:861px){.utilpanel{display:none}}
 @media(max-width:860px){
+  .utilbtn{display:inline-flex}
   .gcs{flex-direction:column}
   .side{width:100%;flex:0 0 auto;height:auto;position:sticky;top:0;flex-direction:row;
     align-items:center;gap:6px;overflow-x:auto;padding:10px 12px;border-right:none;
@@ -139,11 +145,21 @@ const PHASE_BY_MONTH = {
 };
 const NOW = new Date();
 const CURRENT = NOW.toLocaleString("en-US", { month: "short" }); // e.g. "Jun" — updates automatically
-function cycleLabel(d = NOW) {
-  const y = d.getFullYear(), m = d.getMonth(); // Jan–Mar: prior cohort finishing; else current
-  const start = m <= 2 ? y - 1 : y;
-  return `${start}–${String((start + 1) % 100).padStart(2, "0")}`;
-}
+/* Every stored section holds a list; used to sanity-check restored backups. */
+const ARRAY_SECTIONS = new Set([
+  "cycles", "calls", "teams", "classes", "pizza", "sessions",
+  "events", "demochecklist", "road", "cohorts", "alumni", "results",
+  "eventChecklists", "teamProfiles", "kb",
+]);
+
+/* cycles: the registry lives in cloud storage (global scope); this is only the first-run seed */
+const SEED_CYCLES = [{ id: "2026-27", label: "2026–27", status: "active" }];
+const nextCycleLabel = (label) => {
+  const m = String(label).match(/(\d{4})/);
+  if (!m) return "";
+  const y = Number(m[1]) + 1;
+  return `${y}–${String((y + 1) % 100).padStart(2, "0")}`;
+};
 const PHASE_SHORT = (PHASE_BY_MONTH[CURRENT] || "").split(/[ +]/)[0].toUpperCase();
 
 const STAGES = [
@@ -324,13 +340,13 @@ const SEED_ALUMNI = [
 /* ---------- airtable export parsing ---------- */
 const pickCol = (headers, re) => headers.find((h) => re.test(String(h).toLowerCase().trim()));
 const mapCohort = (v) => (/special|cyber|security/.test(String(v).toLowerCase()) ? "special" : "regular");
-const mapAgreed = (v) => {
+export const mapAgreed = (v) => {
   const s = String(v).toLowerCase();
   if (/declin|reject|can.?t|^no\b|unavail/.test(s)) return "declined";
   if (/yes|agree|confirm|accept|attend|✓/.test(s)) return "yes";
   return "pending";
 };
-const mapOutcome = (v) => {
+export const mapOutcome = (v) => {
   const s = String(v).toLowerCase().trim();
   if (!s) return null;
   if (/wait/.test(s)) return "waitlist";
@@ -338,7 +354,7 @@ const mapOutcome = (v) => {
   if (/select|accept|award|win|fund|advance/.test(s)) return "select";
   return null;
 };
-const mapStage = (v, hasDate, outcome) => {
+export const mapStage = (v, hasDate, outcome) => {
   const s = String(v).toLowerCase().trim();
   const hit = STAGES.find((st) => s.includes(st.id) || s.includes(st.label.toLowerCase()));
   if (hit) return hit.id;
@@ -348,7 +364,7 @@ const mapStage = (v, hasDate, outcome) => {
 };
 const splitList = (v) => String(v).split(/[;,/|]/).map((x) => x.trim()).filter(Boolean);
 
-function rowsToTeams(rows) {
+export function rowsToTeams(rows) {
   const clean = (rows || []).filter((r) => r && Object.keys(r).length);
   if (!clean.length) return [];
   const headers = Object.keys(clean[0]);
@@ -458,31 +474,126 @@ function Wheel({ accent }) {
 const FLAT_CHECK = DEMO_CHECKLIST.flatMap((g, gi) =>
   g.items.map((it, ii) => ({ id: `${gi}-${ii}`, group: g.group, label: it[0], owner: it[1] }))
 );
-const CHECK_SEED = (() => {
-  const preset = new Set(["0-0", "0-1", "0-2", "0-3", "1-0", "1-1", "2-0", "2-1"]);
-  return FLAT_CHECK.map((i) => ({ ...i, done: preset.has(i.id) }));
-})();
+const uid = () =>
+  (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()));
+
+/* ---------- events: each cycle carries its own set of event checklists,
+   cloned from these templates. Kickoff includes the August onboarding steps. */
+const KICKOFF_TEMPLATE = [
+  ["Logistics", "Set kickoff date & book the room", "Georgia"],
+  ["Logistics", "Send calendar invites to all teams", "Program team"],
+  ["Logistics", "AV check in the room", "Program team"],
+  ["Logistics", "Order pizza / catering", "Georgia"],
+  ["Cohort onboarding", "Collect signed participation agreements", "Pascal"],
+  ["Cohort onboarding", "Confirm Financial Services accounts opened per team", "Georgia"],
+  ["Cohort onboarding", "Collect team logos & one-liners", "Program team"],
+  ["Cohort onboarding", "Add teams to the cohort mailing list", "Program team"],
+  ["Content", "Update the rules presentation", "Pascal"],
+  ["Content", "Confirm Arman — entrepreneurship talk", "Pascal"],
+  ["Content", "Confirm Riccardo (D3) — 15 minutes", "Pascal"],
+];
+const HOMECOMING_TEMPLATE = [
+  ["Logistics", "Set the date & book the venue", "Georgia"],
+  ["Logistics", "Catering", "Georgia"],
+  ["Logistics", "Name tags", "Georgia"],
+  ["Logistics", "Photographer", "Program team"],
+  ["Invitations", "Build the alumni invite list from the Cohorts library", "Program team"],
+  ["Invitations", "Send invitations", "Program team"],
+  ["Invitations", "Track RSVPs in the Cohorts tab", "Program team"],
+  ["On the night", "Plan the mixer / intro activity", "Program team"],
+  ["After", "Send thank-yous", "Pascal"],
+  ["After", "Update traction notes from conversations", "Pascal"],
+];
+const DEFAULT_EVENTS = () => ([
+  { id: "ev-kickoff", key: "kickoff", name: "Kickoff", date: "Sep",
+    items: KICKOFF_TEMPLATE.map((t, i) => ({ id: `ko-${i}`, group: t[0], label: t[1], owner: t[2], done: false })) },
+  { id: "ev-homecoming", key: "homecoming", name: "Homecoming", date: "Oct",
+    items: HOMECOMING_TEMPLATE.map((t, i) => ({ id: `hc-${i}`, group: t[0], label: t[1], owner: t[2], done: false })) },
+  { id: "ev-demoday", key: "demoday", name: "Demo Day", date: "end Mar",
+    items: FLAT_CHECK.map((i) => ({ id: `dd-${i.id}`, group: i.group, label: i.label, owner: i.owner, done: false })) },
+]);
+const EV_SEED = DEFAULT_EVENTS();
+
+/* ---------- knowledge base: internal team answer sheet (global scope).
+   Seeded only from the kickoff deck + locked program decisions; anything I
+   could not source is marked draft:true for Pascal to confirm — no invented
+   policy. */
+const KB_SEED = [
+  { id: "kb-r1", category: "rules", draft: false, title: "Mission",
+    body: "The GCS Innovation Fund supports innovative student-led projects with strong commercialization potential. It provides financial and mentoring support and grows the school's innovation success stories." },
+  { id: "kb-r2", category: "rules", draft: false, title: "Who can apply",
+    body: "Student-led projects from the Gina Cody School of Engineering and Computer Science. Each year there are two parallel calls: the Regular call, open to all GCS student projects, and a themed Special call (the topic changes each cycle)." },
+  { id: "kb-r3", category: "rules", draft: false, title: "The two phases",
+    body: "Phase 1 — Seed program: the cohort year, September to March. Technology and market development, expert mentorship, the presentation series, monthly check-ins, and preparation for Demo Day.\n\nPhase 2 — Maturation: awarded after the Demo Day pitch to a panel of expert judges. Selected projects receive up to $50,000 per year to build a prototype, find product–market fit, and secure initial clients and funding.\n\nImportant vocabulary: being Selected at the June–July selection admits a team into the cohort. Funding is decided later, at Demo Day." },
+  { id: "kb-r4", category: "rules", draft: false, title: "Eligible expenses",
+    body: "Financial Services opens an account per funded project. Eligible categories: hiring individuals, materials & supplies, small equipment, software, and procurement of goods/services. (Not exhaustive — confirm specifics with Financial Services.)" },
+  { id: "kb-r5", category: "rules", draft: false, title: "The annual calendar",
+    body: "February–March: promo season (class visits, Pizza Q&As).\nMarch: Regular + Special calls open.\nEarly May: calls close.\nJune–July: selection — evaluation (6 judges scoring /5, total /30), interviews, decisions.\nAugust: onboarding.\nSeptember: kickoff.\nOctober: Homecoming.\nEnd of March: Demo Day, followed by Phase 2 funding decisions." },
+  { id: "kb-f1", category: "faq", draft: false, title: "How much funding can a team receive?",
+    body: "Up to $50,000 per year, in Phase 2, awarded after the Demo Day pitch. The Seed year itself centers on mentorship, programming, and development support." },
+  { id: "kb-f2", category: "faq", draft: false, title: "When are applications due?",
+    body: "Calls open in March and close in early May. Exact dates are set per cycle — check the current calls on the dashboard or the program page." },
+  { id: "kb-f3", category: "faq", draft: true, title: "Can a team apply to both the Regular and Special calls?",
+    body: "⚠ Draft — confirm the policy before quoting. Suggested answer: apply to the call that best fits the project; a Special-call project is by definition also within the Regular call's scope, so pick one." },
+  { id: "kb-f4", category: "faq", draft: true, title: "Who owns the IP?",
+    body: "⚠ Draft — confirm with Denis Keseris / the IP office before quoting. Concordia's IP policy applies; the program itself does not take equity or IP." },
+  { id: "kb-f5", category: "faq", draft: true, title: "Is there a team size limit?",
+    body: "⚠ Draft — confirm. No limit has been documented; the practical guidance has been a core team that can present and execute." },
+  { id: "kb-f6", category: "faq", draft: false, title: "What happens if we're not selected?",
+    body: "Teams can reapply in a future cycle, and waitlisted teams are contacted when the next calls open. Feedback is available on request." },
+  { id: "kb-t1", category: "templates", draft: true, title: "Interview invitation (email)",
+    body: "Subject: GCS Innovation Fund — interview invitation\n\nHi [team name],\n\nThank you for your application to the GCS Innovation Fund. The evaluation committee would like to invite you to a short interview about your project.\n\nCould you share your availability during [date range]? Interviews run about [20] minutes, [on campus / online].\n\nBest,\n[Name]\nResearch & Innovation, Gina Cody School" },
+  { id: "kb-t2", category: "templates", draft: true, title: "Acceptance (email)",
+    body: "Subject: Welcome to the GCS Innovation Fund\n\nHi [team name],\n\nCongratulations — your project has been selected for this year's cohort! The program runs September to March, ending at Demo Day.\n\nNext steps: [participation agreement] · [kickoff date & location] · [what to prepare].\n\nWe're glad to have you.\n[Name]" },
+  { id: "kb-t3", category: "templates", draft: true, title: "Not selected, with feedback offer (email)",
+    body: "Subject: GCS Innovation Fund — your application\n\nHi [team name],\n\nThank you for applying. This cycle was competitive and your project was not selected. We'd be glad to share the committee's feedback if useful — just reply to this email.\n\nCalls reopen in March, and we hope you'll consider applying again.\n\nBest,\n[Name]" },
+  { id: "kb-t4", category: "templates", draft: true, title: "Waitlist (email)",
+    body: "Subject: GCS Innovation Fund — waitlist\n\nHi [team name],\n\nYour project has been placed on this cycle's waitlist. If a spot opens before kickoff, we'll contact you right away — and when the next calls open we'll reach out directly.\n\nBest,\n[Name]" },
+  { id: "kb-t5", category: "templates", draft: true, title: "Homecoming invitation (email)",
+    body: "Subject: Homecoming — come meet the new cohort\n\nHi [name],\n\nEach October we bring past Innovation Fund teams back to meet the incoming cohort. This year: [date, time, place]. Food's on us.\n\nCan we count you in? [RSVP link]\n\n[Name]" },
+];
 
 /* ============================================================ */
 export default function App() {
   const [view, setView] = useState("dashboard");
-  const [callList, setCallList] = useCloudSection("calls", SEED_CALLS);
+
+  /* ---- cycles: registry is global; everything operational is keyed by the viewed cycle ---- */
+  const [cycles, setCycles, saveCycles] = useCloudSection("cycles", SEED_CYCLES, "global");
+  const saveState = useSaveStatus();
+  const [utilOpen, setUtilOpen] = useState(false);
+  const activeCycle = cycles.find((c) => c.status === "active") || cycles[0] || SEED_CYCLES[0];
+  const [viewCycleId, setViewCycleId] = useState(null); // null = follow the active cycle
+  const cycleId = viewCycleId ?? activeCycle.id;
+  const viewedCycle = cycles.find((c) => c.id === cycleId) || activeCycle;
+  const isPastView = cycleId !== activeCycle.id;
+  const [cyOpen, setCyOpen] = useState(false);
+  const [newCyLabel, setNewCyLabel] = useState("");
+
+  const [callList, setCallList] = useCloudSection("calls", SEED_CALLS, cycleId);
   const [activeCall, setActiveCall] = useState("regular");
   const [draft, setDraft] = useState({ open: false, name: "", topic: "", accent: PALETTE[1].hex });
-  const [sessions, setSessions] = useCloudSection("sessions", SESSIONS);
+  const [sessions, setSessions] = useCloudSection("sessions", SESSIONS, cycleId);
   const [psDraft, setPsDraft] = useState({ date: "", title: "", who: "" });
-  const [teams, setTeams] = useCloudSection("teams", SEED_TEAMS);
-  const [alumni, setAlumni] = useCloudSection("alumni", SEED_ALUMNI);
+  const [teams, setTeams] = useCloudSection("teams", SEED_TEAMS, cycleId);
+  const [alumni, setAlumni] = useCloudSection("alumni", SEED_ALUMNI, "global");
   const [selTab, setSelTab] = useState("list");
   const [dragId, setDragId] = useState(null);
   const [importedName, setImportedName] = useState(null);
   const [importError, setImportError] = useState(null);
   const [dragging, setDragging] = useState(false);
-  const [classes, setClasses] = useCloudSection("classes", CLASSES);
-  const [pizza, setPizza] = useCloudSection("pizza", PIZZA);
-  const [checklist, setChecklist] = useCloudSection("demochecklist", CHECK_SEED);
-  const [road, setRoad] = useCloudSection("road", ROAD_TEAMS);
-  const [events, setEvents] = useCloudSection("events", CRITICAL);
+  const [classes, setClasses] = useCloudSection("classes", CLASSES, cycleId);
+  const [pizza, setPizza] = useCloudSection("pizza", PIZZA, cycleId);
+  const [evList, setEvList, saveEvList] = useCloudSection("eventChecklists", EV_SEED, cycleId);
+  const [activeEvId, setActiveEvId] = useState(null);
+  const [results, setResults] = useCloudSection("results", [], cycleId);
+  const [profiles, setProfiles] = useCloudSection("teamProfiles", [], cycleId);
+  const [activeProfileId, setActiveProfileId] = useState(null);
+  const [kb, setKb] = useCloudSection("kb", KB_SEED, "global");
+  const [kbTab, setKbTab] = useState("rules");
+  const [kbQuery, setKbQuery] = useState("");
+  const [copiedId, setCopiedId] = useState(null);
+  const [road, setRoad] = useCloudSection("road", ROAD_TEAMS, cycleId);
+  const [events, setEvents] = useCloudSection("events", CRITICAL, cycleId);
   const [evDraft, setEvDraft] = useState({ open: false, m: "Sep", label: "", color: PALETTE[2].hex });
   const [cohortsTab, setCohortsTab] = useState("success");
   const [cohortFilter, setCohortFilter] = useState("all");
@@ -491,10 +602,6 @@ export default function App() {
   const accent = accentObj ? accentObj.accent : T.burgundy;
 
   const upd = (id, patch) => setTeams((ts) => ts.map((t) => (t.id === id ? { ...t, ...patch } : t)));
-  const advance = (t) => {
-    const i = STAGES.findIndex((s) => s.id === t.stage);
-    if (i < STAGES.length - 1) upd(t.id, { stage: STAGES[i + 1].id });
-  };
   const cycleAgreed = (t) => {
     const order = ["pending", "yes", "declined"];
     upd(t.id, { agreed: order[(order.indexOf(t.agreed) + 1) % 3] });
@@ -521,6 +628,7 @@ export default function App() {
         setImportError("Couldn't find a team or project column. Check the export's column headers and try again.");
         return;
       }
+      if (teams.length && !window.confirm(`Replace the current ${teams.length} team${teams.length === 1 ? "" : "s"} with ${parsed.length} from this file? Tip: use Backup in the sidebar first.`)) return;
       setTeams(parsed);
       setImportedName(fname);
       setImportError(null);
@@ -557,14 +665,240 @@ export default function App() {
     }
   };
   const resetData = () => {
+    if (!window.confirm("Replace the pipeline with the sample teams? This overwrites the current list.")) return;
     setTeams(SEED_TEAMS);
     setImportedName(null);
     setImportError(null);
   };
-  const toggleCheck = (id) => setChecklist((cl) => cl.map((c) => (c.id === id ? { ...c, done: !c.done } : c)));
-  const updCheck = (id, patch) => setChecklist((cl) => cl.map((c) => (c.id === id ? { ...c, ...patch } : c)));
-  const rmCheck = (id) => setChecklist((cl) => cl.filter((c) => c.id !== id));
-  const addCheck = (group) => setChecklist((cl) => [...cl, { id: (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())), group, label: "", owner: "", done: false }]);
+
+  /* ---- cycle rollover: create the next cycle, seed fresh templates, keep history browsable ---- */
+  const startNewCycle = async () => {
+    const label = (newCyLabel.trim() || nextCycleLabel(activeCycle.label)).trim();
+    if (!label) return;
+    const id = label.replace(/\s+/g, "").replace(/–/g, "-");
+    if (cycles.some((c) => c.id === id)) { window.alert(`Cycle ${label} already exists.`); return; }
+    if (!window.confirm(`Start cycle ${label}? ${activeCycle.label} becomes browsable history, and ${label} starts with fresh templates.`)) return;
+    const templates = {
+      teams: [], classes: [], pizza: [], road: [], results: [], teamProfiles: [],
+      sessions: SESSIONS.map((s) => ({ ...s, done: false })),
+      eventChecklists: DEFAULT_EVENTS(),
+      events: CRITICAL,
+      calls: callList.map((c) => ({ ...c, subs: 0 })),
+    };
+    // Seed every section in ONE request, then commit the registry with a
+    // direct (non-debounced) write. Order matters: if the seed fails we stop
+    // before the registry changes, so a half-made cycle is never announced.
+    const rows = Object.entries(templates).map(([section, data]) => ({ cycle: id, section, data }));
+    if (!(await writeRows(rows))) {
+      window.alert("Couldn't create the cycle — nothing was changed. Check your connection and try again.");
+      return;
+    }
+    const nextRegistry = [
+      ...cycles.map((c) => (c.status === "active" ? { ...c, status: "past" } : c)),
+      { id, label, status: "active" },
+    ];
+    if (!(await saveCycles(nextRegistry))) {
+      window.alert("The new cycle's data was saved but the switch didn't commit. Reload and try again.");
+      return;
+    }
+    setViewCycleId(null);
+    setCyOpen(false);
+    setNewCyLabel("");
+  };
+
+  const renameCycle = async (c) => {
+    const label = (window.prompt("Rename cycle", c.label) || "").trim();
+    if (!label || label === c.label) return;
+    await saveCycles(cycles.map((x) => (x.id === c.id ? { ...x, label } : x)));
+  };
+
+  const deleteCycle = async (c) => {
+    if (c.id === activeCycle.id) { window.alert("The active cycle can't be deleted. Start or switch to another cycle first."); return; }
+    if (!window.confirm(`Delete ${c.label} and everything stored in it? This cannot be undone — take a Backup first.`)) return;
+    if (!(await saveCycles(cycles.filter((x) => x.id !== c.id)))) {
+      window.alert("Couldn't update the cycle list — nothing was deleted.");
+      return;
+    }
+    await deleteCycleData(c.id);
+    if (viewCycleId === c.id) setViewCycleId(null);
+  };
+
+  /* ---- backup: one JSON of everything; restore overwrites everything ---- */
+  const exportAll = async () => {
+    if (!supabase) { window.alert("Connect the database to export."); return; }
+    const { data, error } = await supabase.from("app_state").select("cycle,section,data,updated_at");
+    if (error) { window.alert("Export failed: " + error.message); return; }
+    const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), rows: data || [] }, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `if-dashboard-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+  const importAllFile = (file) => {
+    if (!file) return;
+    if (!supabase) { window.alert("Connect the database to restore."); return; }
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const parsed = JSON.parse(e.target.result);
+        const rows = parsed && Array.isArray(parsed.rows) ? parsed.rows : null;
+        if (!rows || !rows.length) { window.alert("That doesn't look like a dashboard backup file."); return; }
+        // Validate before touching anything: known sections must be arrays,
+        // and every row needs a cycle + section. Unknown sections are allowed
+        // through so older/newer backups stay restorable.
+        const problems = [];
+        rows.forEach((r, i) => {
+          if (!r || typeof r.cycle !== "string" || typeof r.section !== "string") {
+            problems.push(`row ${i + 1}: missing cycle or section`);
+          } else if (ARRAY_SECTIONS.has(r.section) && !Array.isArray(r.data)) {
+            problems.push(`${r.section} (${r.cycle}): expected a list`);
+          }
+        });
+        if (problems.length) {
+          window.alert(`This backup looks damaged — nothing was changed.\n\n${problems.slice(0, 5).join("\n")}${problems.length > 5 ? `\n…and ${problems.length - 5} more` : ""}`);
+          return;
+        }
+        if (!window.confirm(`Restore backup from ${parsed.exportedAt || "unknown date"}? This overwrites ALL current data (${rows.length} sections).`)) return;
+        const ok = await writeRows(rows.map((r) => ({ cycle: r.cycle, section: r.section, data: r.data })));
+        if (!ok) { window.alert("Restore failed — your current data is unchanged."); return; }
+        window.alert("Backup restored. Reloading…");
+        window.location.reload();
+      } catch {
+        window.alert("Couldn't read that file — is it a backup exported from this app?");
+      }
+    };
+    reader.readAsText(file);
+  };
+  /* ---- events: per-event checklist handlers ---- */
+  const activeEv = evList.find((e) => e.id === activeEvId) || evList[0] || null;
+  const updEvent = (evId, patch) => setEvList((l) => l.map((e) => (e.id === evId ? { ...e, ...patch } : e)));
+  const updEvItems = (evId, fn) => setEvList((l) => l.map((e) => (e.id === evId ? { ...e, items: fn(e.items) } : e)));
+  const toggleEvItem = (evId, itemId) => updEvItems(evId, (its) => its.map((i) => (i.id === itemId ? { ...i, done: !i.done } : i)));
+  const updEvItem = (evId, itemId, patch) => updEvItems(evId, (its) => its.map((i) => (i.id === itemId ? { ...i, ...patch } : i)));
+  const rmEvItem = (evId, itemId) => updEvItems(evId, (its) => its.filter((i) => i.id !== itemId));
+  const addEvItem = (evId, group) => updEvItems(evId, (its) => [...its, { id: uid(), group, label: "", owner: "", done: false }]);
+  const addEvGroup = (evId) => {
+    const g = (window.prompt("Name the new group (e.g. Invitations)") || "").trim();
+    if (g) addEvItem(evId, g);
+  };
+  const addEvent = () => {
+    const n = (window.prompt("Name the event (e.g. Investor night)") || "").trim();
+    if (!n) return;
+    const ev = { id: uid(), name: n, date: "", items: [{ id: uid(), group: "General", label: "", owner: "", done: false }] };
+    setEvList((l) => [...l, ev]);
+    setActiveEvId(ev.id);
+  };
+  const rmEvent = (evId) => {
+    const ev = evList.find((e) => e.id === evId);
+    if (!ev) return;
+    if (!window.confirm(`Remove the "${ev.name}" event and its ${ev.items.length} steps?`)) return;
+    setEvList((l) => l.filter((e) => e.id !== evId));
+    if (activeEvId === evId) setActiveEvId(null);
+  };
+  /* One-time per cycle: absorb the legacy flat Demo Day checklist (with its
+     user edits and progress) into the Events system, preserving everything. */
+  useEffect(() => {
+    if (!supabase) return;
+    let alive = true;
+    (async () => {
+      const { data: newRow } = await supabase.from("app_state").select("data")
+        .eq("cycle", cycleId).eq("section", "eventChecklists").maybeSingle();
+      if (!alive || newRow) return;
+      const { data: oldRow } = await supabase.from("app_state").select("data")
+        .eq("cycle", cycleId).eq("section", "demochecklist").maybeSingle();
+      if (!alive || !oldRow || !Array.isArray(oldRow.data) || !oldRow.data.length) return;
+      const migrated = DEFAULT_EVENTS().map((ev) =>
+        ev.key === "demoday" ? { ...ev, items: oldRow.data } : ev
+      );
+      await saveEvList(migrated);
+    })();
+    return () => { alive = false; };
+  }, [cycleId]);
+
+  /* ---- team profiles ---- */
+  const activeProfile = profiles.find((p) => p.id === activeProfileId) || profiles[0] || null;
+  const blankProfile = (t) => ({
+    id: uid(), teamId: t ? t.id : null, name: t ? t.name : "",
+    members: "", dept: "", supervisor: "", mentor: "", finance: "pending", notes: "",
+    meetings: [], deliverables: [],
+  });
+  const missingProfiles = teams.filter(
+    (t) => t.outcome === "select" && !profiles.some((p) => p.teamId === t.id || (p.name && p.name === t.name))
+  );
+  const createMissingProfiles = () => {
+    if (!missingProfiles.length) return;
+    setProfiles((ps) => [...ps, ...missingProfiles.map(blankProfile)]);
+  };
+  const updProfile = (id, patch) => setProfiles((ps) => ps.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  const rmProfile = (id) => {
+    const p = profiles.find((x) => x.id === id);
+    if (!p) return;
+    if (!window.confirm(`Remove the profile for "${p.name || "this team"}"? Meetings and deliverables go with it.`)) return;
+    setProfiles((ps) => ps.filter((x) => x.id !== id));
+    if (activeProfileId === id) setActiveProfileId(null);
+  };
+  const updSub = (pid, key, subId, patch) =>
+    updProfile(pid, { [key]: (profiles.find((p) => p.id === pid)?.[key] || []).map((x) => (x.id === subId ? { ...x, ...patch } : x)) });
+  const addSub = (pid, key, blank) =>
+    updProfile(pid, { [key]: [...(profiles.find((p) => p.id === pid)?.[key] || []), { id: uid(), ...blank }] });
+  const rmSub = (pid, key, subId) =>
+    updProfile(pid, { [key]: (profiles.find((p) => p.id === pid)?.[key] || []).filter((x) => x.id !== subId) });
+
+  /* ---- knowledge base ---- */
+  const updKb = (id, patch) => setKb((ks) => ks.map((k) => (k.id === id ? { ...k, ...patch } : k)));
+  const rmKb = (id) => setKb((ks) => ks.filter((k) => k.id !== id));
+  const addKb = (category) => setKb((ks) => [...ks, { id: uid(), category, title: "", body: "", draft: true }]);
+  const [kbEdit, setKbEdit] = useState(null);
+  const copyKb = (k) => {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(k.body || "");
+      setCopiedId(k.id);
+      setTimeout(() => setCopiedId(null), 1500);
+    }
+  };
+
+  /* ---- demo day results ---- */
+  const missingResults = teams.filter(
+    (t) => t.outcome === "select" && !results.some((r) => r.teamId === t.id || (r.team && r.team === t.name))
+  );
+  const addMissingResults = () => {
+    if (!missingResults.length) return;
+    setResults((rs) => [...rs, ...missingResults.map((t) => ({
+      id: uid(), teamId: t.id, team: t.name, pitched: false, awards: [], phase2: false, amount: "", note: "",
+    }))]);
+  };
+  const updResult = (id, patch) => setResults((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const rmResult = (id) => setResults((rs) => rs.filter((r) => r.id !== id));
+  const toggleResultAward = (id, a) => setResults((rs) => rs.map((r) =>
+    r.id === id ? { ...r, awards: r.awards.includes(a) ? r.awards.filter((x) => x !== a) : [...r.awards, a] } : r));
+  const publishResults = async () => {
+    const entries = results.filter((r) => (r.team || "").trim());
+    if (!entries.length) { window.alert("No results to publish yet — add the cohort's teams first."); return; }
+    const label = (window.prompt("Name this cohort in the library (e.g. Cohort 7)") || "").trim();
+    if (!label) return;
+    const libTeams = entries.map((r) => {
+      const src = teams.find((t) => t.id === r.teamId || t.name === r.team);
+      const note = [
+        (r.note || "").trim() || null,
+        r.phase2 && Number(r.amount) > 0 ? `$${Number(r.amount).toLocaleString()}/yr Phase 2` : null,
+      ].filter(Boolean).join(" — ");
+      return { name: r.team, blurb: src ? src.blurb : "", awards: r.awards, phase2: !!r.phase2, note };
+    });
+    const existing = cohortData.findIndex((c) => c.c.toLowerCase() === label.toLowerCase());
+    const next = existing >= 0
+      ? cohortData.map((c, i) => (i === existing ? { ...c, year: viewedCycle.label, teams: libTeams } : c))
+      : [...cohortData, { c: label, year: viewedCycle.label, teams: libTeams }];
+    if (!window.confirm(`${existing >= 0 ? "Update" : "Add"} "${label}" in the Cohorts library with ${libTeams.length} team${libTeams.length === 1 ? "" : "s"}?`)) return;
+    if (await saveCohorts(next)) {
+      window.alert("Published to the Cohorts library.");
+      setView("cohorts");
+      setCohortsTab("success");
+    } else {
+      window.alert("Publish failed — the library is unchanged. Check your connection and try again.");
+    }
+  };
+
   const cycleRoad = (i) => {
     const order = ["notstarted", "progress", "ready"];
     setRoad((r) => r.map((t, j) => (j === i ? { ...t, status: order[(order.indexOf(t.status) + 1) % 3] } : t)));
@@ -587,7 +921,7 @@ export default function App() {
   const addAlum = () => setAlumni((al) => [...al, { team: "", year: "", contact: "", status: "pending" }]);
   const rmAlum = (i) => setAlumni((al) => al.filter((_, j) => j !== i));
 
-  const [cohortData, setCohortData] = useCloudSection("cohorts", COHORTS);
+  const [cohortData, setCohortData, saveCohorts] = useCloudSection("cohorts", COHORTS, "global");
   const [editTeam, setEditTeam] = useState(null);
   const [cohortMsg, setCohortMsg] = useState(null);
   const updTeam = (ci, ti, patch) => setCohortData((cd) => cd.map((co, a) => (a === ci ? { ...co, teams: co.teams.map((t, b) => (b === ti ? { ...t, ...patch } : t)) } : co)));
@@ -685,10 +1019,10 @@ export default function App() {
     } else setClassMsg("Use a .csv, .xlsx, or .xls file.");
   };
 
-  const demoDone = checklist.filter((c) => c.done).length;
-  const demoTotal = checklist.length;
-  const demoPct = demoTotal ? Math.round((demoDone / demoTotal) * 100) : 0;
-  const demoGroups = [...new Set(checklist.map((c) => c.group))];
+  const nextEv = evList.find((ev) => ev.items.some((i) => !i.done)) || evList[evList.length - 1] || null;
+  const nextEvDone = nextEv ? nextEv.items.filter((i) => i.done).length : 0;
+  const nextEvTotal = nextEv ? nextEv.items.length : 0;
+  const nextEvPct = nextEvTotal ? Math.round((nextEvDone / nextEvTotal) * 100) : 0;
 
   const visibleTeams = teams; // skin is a visual lens here; all teams shown, tagged by cohort
   const counts = {
@@ -696,14 +1030,20 @@ export default function App() {
     scheduled: teams.filter((t) => t.stage === "scheduled" || t.stage === "completed" || t.stage === "decided").length,
     selected: teams.filter((t) => t.outcome === "select").length,
   };
-  const comingPct = Math.round((alumni.filter((a) => a.status === "coming").length / alumni.length) * 100);
+  const comingPct = alumni.length ? Math.round((alumni.filter((a) => a.status === "coming").length / alumni.length) * 100) : 0;
+  const heldN = sessions.filter((s) => s.done).length;
+  const progPct = sessions.length ? Math.round((heldN / sessions.length) * 100) : 0;
+  const selPct = teams.length ? Math.round((counts.scheduled / teams.length) * 100) : 0;
+  const noDate = teams.filter((t) => !t.date && ["flagged", "invited", "responded"].includes(t.stage)).length;
 
   const NAV = [
     { id: "dashboard", label: "Dashboard", Icon: LayoutGrid },
     { id: "calls", label: "Calls & promo", Icon: Megaphone },
     { id: "selection", label: "Selection", Icon: ListChecks },
+    { id: "teams", label: "Teams", Icon: Users },
     { id: "planning", label: "Planning", Icon: CalendarCheck },
     { id: "programming", label: "Programming", Icon: CalendarDays },
+    { id: "knowledge", label: "Knowledge", Icon: BookOpen },
     { id: "cohorts", label: "Cohorts", Icon: Trophy },
   ];
 
@@ -712,11 +1052,69 @@ export default function App() {
     a === "declined" ? <Pill bg="#FBE3DC" fg={T.danger}><X size={12} /> Declined</Pill> :
     <Pill bg="#FBF1D8" fg="#9a7b12"><Clock size={12} /> Pending</Pill>;
 
-  const outcomePill = (o) =>
-    o === "select" ? <Pill bg={accent} fg="#fff">Selected</Pill> :
-    o === "waitlist" ? <Pill bg={T.tint} fg={T.burgundy}>Waitlist</Pill> :
-    o === "reject" ? <Pill bg="#EFEAE5" fg={T.muted}>Not selected</Pill> :
-    <span style={{ color: T.muted, fontSize: 12 }}>—</span>;
+  /* One definition, rendered twice: in the sidebar on desktop and inside the
+     topbar menu on narrow screens (where the sidebar footer is hidden). */
+  const utilPanel = (
+    <>
+      <button onClick={() => setCyOpen((o) => !o)} title="Switch cycle"
+        style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", textAlign: "left" }}>
+        <span className="eyebrow">Cycle {viewedCycle.label}</span>
+        <ChevronDown size={12} style={{ color: T.muted, transform: cyOpen ? "rotate(180deg)" : "none", transition: ".12s" }} />
+      </button>
+      {cyOpen && (
+        <div style={{ marginTop: 7, border: `1px solid ${T.hairline}`, borderRadius: 11, padding: 7, background: T.paper }}>
+          {cycles.map((c) => (
+            <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 4, borderRadius: 7, background: c.id === cycleId ? T.surface : "none" }}>
+              <button
+                onClick={() => { setViewCycleId(c.id === activeCycle.id ? null : c.id); setCyOpen(false); setUtilOpen(false); }}
+                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flex: 1, minWidth: 0, padding: "5px 7px", fontSize: 12.5, fontWeight: c.id === cycleId ? 700 : 500 }}>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.label}</span>
+                <span className="mono" style={{ fontSize: 10, color: c.status === "active" ? T.ok : T.muted }}>{c.status === "active" ? "active" : "past"}</span>
+              </button>
+              <button onClick={() => renameCycle(c)} title="Rename cycle" style={{ color: T.muted, display: "grid", placeItems: "center", padding: 3 }}><Pencil size={11} /></button>
+              {c.id !== activeCycle.id && (
+                <button onClick={() => deleteCycle(c)} title="Delete cycle" style={{ color: T.muted, display: "grid", placeItems: "center", padding: 3 }}><Trash2 size={11} /></button>
+              )}
+            </div>
+          ))}
+          <div style={{ display: "flex", gap: 5, marginTop: 7, paddingTop: 7, borderTop: `1px solid ${T.hairline}` }}>
+            <input value={newCyLabel} onChange={(e) => setNewCyLabel(e.target.value)}
+              placeholder={nextCycleLabel(activeCycle.label) || "2027–28"}
+              style={{ flex: 1, minWidth: 0, fontSize: 11.5, padding: "5px 7px", border: `1px solid ${T.hairline}`, borderRadius: 7, fontFamily: "inherit", background: T.surface, color: T.ink }} />
+            <button className="mini" onClick={startNewCycle}>Start</button>
+          </div>
+        </div>
+      )}
+      <div style={{ fontSize: 12.5, color: T.muted, marginTop: 9 }}>
+        {isPastView ? "Past cycle · read and edit history" : PHASE_BY_MONTH[CURRENT]}
+      </div>
+      <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
+        <button className="mini" onClick={exportAll} title="Download a backup of all data">
+          <Download size={11} style={{ verticalAlign: -1, marginRight: 4 }} />Backup
+        </button>
+        <label className="mini" style={{ cursor: "pointer" }} title="Restore from a backup file">
+          <Upload size={11} style={{ verticalAlign: -1, marginRight: 4 }} />Restore
+          <input type="file" accept=".json,application/json" style={{ display: "none" }} onChange={(e) => { importAllFile(e.target.files[0]); e.target.value = ""; }} />
+        </label>
+      </div>
+      {supabase && (
+        <button onClick={() => supabase.auth.signOut()}
+          style={{ marginTop: 10, fontSize: 12, color: T.muted, background: "none", border: `1px solid ${T.hairline}`, borderRadius: 999, padding: "6px 12px", cursor: "pointer" }}>
+          Sign out
+        </button>
+      )}
+    </>
+  );
+
+  const saveChip = saveState.failed > 0 ? (
+    <button className="savechip" onClick={retryFailedSaves} title="A change didn't save — click to retry" style={{ color: T.danger }}>
+      <AlertTriangle size={12} /> Not saved · Retry
+    </button>
+  ) : saveState.pending > 0 ? (
+    <span className="savechip"><RefreshCw size={12} /> Saving…</span>
+  ) : (
+    <span className="savechip" style={{ color: T.ok }}><Check size={12} /> Saved</span>
+  );
 
   return (
     <div className="gcs" style={{ "--accent": accent }}>
@@ -737,14 +1135,7 @@ export default function App() {
           </button>
         ))}
         <div className="sidefoot" style={{ marginTop: "auto", padding: "14px 10px 4px" }}>
-          <div className="eyebrow" style={{ marginBottom: 8 }}>Cycle {cycleLabel()}</div>
-          <div style={{ fontSize: 12.5, color: T.muted }}>{PHASE_BY_MONTH[CURRENT]}</div>
-          {supabase && (
-            <button onClick={() => supabase.auth.signOut()}
-              style={{ marginTop: 12, fontSize: 12, color: T.muted, background: "none", border: `1px solid ${T.hairline}`, borderRadius: 999, padding: "6px 12px", cursor: "pointer" }}>
-              Sign out
-            </button>
-          )}
+          {utilPanel}
         </div>
       </aside>
 
@@ -757,13 +1148,33 @@ export default function App() {
               {NAV.find((n) => n.id === view).label}
             </div>
           </div>
-          <div className="skin">
-            {callList.map((c) => (
-              <button key={c.id} className={activeCall === c.id ? "on" : ""} style={activeCall === c.id ? { background: c.accent } : {}} onClick={() => setActiveCall(c.id)} title={c.topic}>{c.name}</button>
-            ))}
-            <button onClick={() => { setView("calls"); setDraft((d) => ({ ...d, open: true })); }} title="Add a call" style={{ padding: "6px 12px", color: T.muted, fontWeight: 800 }}>+</button>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            {saveChip}
+            <div className="skin">
+              {callList.map((c) => (
+                <button key={c.id} className={activeCall === c.id ? "on" : ""} style={activeCall === c.id ? { background: c.accent } : {}} onClick={() => setActiveCall(c.id)} title={c.topic}>{c.name}</button>
+              ))}
+              <button onClick={() => { setView("calls"); setDraft((d) => ({ ...d, open: true })); }} title="Add a call" style={{ padding: "6px 12px", color: T.muted, fontWeight: 800 }}>+</button>
+            </div>
+            <button className="utilbtn mini" onClick={() => setUtilOpen((o) => !o)} title="Cycle, backup and account"
+              style={{ alignItems: "center", gap: 5 }}>
+              <Settings size={13} /> Menu
+            </button>
           </div>
         </div>
+
+        {utilOpen && (
+          <div className="utilpanel">{utilPanel}</div>
+        )}
+
+        {isPastView && (
+          <div style={{ background: T.tint, color: T.burgundy, padding: "8px 34px", fontSize: 12.5, fontFamily: "'IBM Plex Mono', monospace", display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+            <span>Viewing {viewedCycle.label} · past cycle — edits save to that cycle.</span>
+            <button onClick={() => setViewCycleId(null)} style={{ textDecoration: "underline", fontWeight: 700, color: T.burgundy }}>
+              Back to {activeCycle.label}
+            </button>
+          </div>
+        )}
 
         <div className="content">
           {view === "dashboard" && (
@@ -788,18 +1199,18 @@ export default function App() {
                     <Stat n={counts.selected} l="Selected so far" accent={accent} />
                   </div>
                   <div className="card">
-                    <div className="eyebrow" style={{ marginBottom: 12 }}>Two cohorts, live at once</div>
-                    <Swimlane label="Cohort 2025–26 · programming" sub="Sep → Mar · session 3 of 11" pct={28} accent={accent} />
+                    <div className="eyebrow" style={{ marginBottom: 12 }}>Cycle {viewedCycle.label} · two seasons</div>
+                    <Swimlane label="Selection · Jun–Jul" sub={`${counts.scheduled}/${teams.length} at interview or beyond`} pct={selPct} accent={accent} />
                     <div style={{ height: 14 }} />
-                    <Swimlane label="Cohort 2026–27 · selecting" sub="Interviews underway · Jun–Jul" pct={64} accent={accent} />
+                    <Swimlane label="Programming · Sep → Mar" sub={`${heldN}/${sessions.length} sessions held`} pct={progPct} accent={accent} />
                   </div>
                 </div>
               </div>
 
               <div className="card" style={{ marginTop: 16 }}>
                 <div className="eyebrow" style={{ marginBottom: 12 }}>Needs attention</div>
-                <Alert icon={<Clock size={15} />} text="2 shortlisted teams have no interview date yet" cta="Open selection" onClick={() => setView("selection")} accent={accent} />
-                <Alert icon={<CalendarCheck size={15} />} text={`Demo Day prep is ${demoPct}% complete — ${demoTotal - demoDone} steps left`} cta="Open planning" onClick={() => setView("planning")} accent={accent} />
+                <Alert icon={<Clock size={15} />} text={noDate ? `${noDate} shortlisted team${noDate === 1 ? " has" : "s have"} no interview date yet` : "All shortlisted teams have an interview date"} cta="Open selection" onClick={() => setView("selection")} accent={accent} />
+                <Alert icon={<CalendarCheck size={15} />} text={nextEv ? `${nextEv.name} prep is ${nextEvPct}% complete — ${nextEvTotal - nextEvDone} step${nextEvTotal - nextEvDone === 1 ? "" : "s"} left` : "No events planned yet"} cta="Open planning" onClick={() => setView("planning")} accent={accent} />
                 <Alert icon={<Megaphone size={15} />} text={`Promo: ${classes.filter((c) => c.done).length}/${classes.length} class visits and ${pizza.filter((p) => p.done).length}/${pizza.length} pizza Q&As done`} cta="Manage promo" onClick={() => setView("calls")} accent={accent} />
                 <Alert icon={<Trophy size={15} />} text={`Homecoming: ${comingPct}% of alumni confirmed`} cta="View cohorts" onClick={() => setView("cohorts")} accent={accent} last />
               </div>
@@ -1070,17 +1481,124 @@ export default function App() {
             </>
           )}
 
+          {view === "teams" && (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
+                <div>
+                  <div className="h1 disp">Teams · cycle {viewedCycle.label}</div>
+                  <div className="sub">The cohort's home for the Seed year — members, onboarding status, monthly check-ins, and deliverables.</div>
+                </div>
+                <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }}
+                  onClick={() => { const p = blankProfile(null); setProfiles((ps) => [...ps, p]); setActiveProfileId(p.id); }}>
+                  <Plus size={13} /> Add team
+                </button>
+              </div>
+
+              {missingProfiles.length > 0 && (
+                <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", background: T.tint, borderRadius: 12, padding: "10px 14px" }}>
+                  <span style={{ fontSize: 13, color: T.burgundy }}>
+                    {missingProfiles.length} Selected team{missingProfiles.length === 1 ? " doesn't" : "s don't"} have a profile yet.
+                  </span>
+                  <button className="mini" style={{ borderColor: T.burgundy, color: T.burgundy }} onClick={createMissingProfiles}>Create {missingProfiles.length === 1 ? "it" : "them"}</button>
+                </div>
+              )}
+
+              {profiles.length === 0 ? (
+                <div className="card" style={{ marginTop: 16, color: T.muted, fontSize: 13.5 }}>
+                  No team profiles yet. They're created from the Selection pipeline's Selected teams, or add one manually.
+                </div>
+              ) : (
+                <>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 18 }}>
+                    {profiles.map((p) => (
+                      <button key={p.id} className={"chip" + (activeProfile && activeProfile.id === p.id ? " on" : "")} onClick={() => setActiveProfileId(p.id)}>
+                        {p.name || "Untitled"}
+                      </button>
+                    ))}
+                  </div>
+
+                  {activeProfile && (
+                    <div className="grid" style={{ gridTemplateColumns: "1fr 1.3fr", marginTop: 14 }}>
+                      <div className="card">
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                          <div className="eyebrow">Profile</div>
+                          <button onClick={() => rmProfile(activeProfile.id)} title="Remove profile" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button>
+                        </div>
+                        <EInput value={activeProfile.name} onChange={(v) => updProfile(activeProfile.id, { name: v })} placeholder="Team name" />
+                        <div className="eyebrow" style={{ margin: "12px 0 3px" }}>Members</div>
+                        <textarea value={activeProfile.members} onChange={(e) => updProfile(activeProfile.id, { members: e.target.value })}
+                          placeholder={"One per line — name, program, email"} rows={4}
+                          style={{ width: "100%", padding: "8px 10px", border: `1px solid ${T.hairline}`, borderRadius: 9, fontFamily: "inherit", fontSize: 13, background: T.surface, color: T.ink, resize: "vertical", boxSizing: "border-box" }} />
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 10 }}>
+                          <div><div className="eyebrow" style={{ marginBottom: 3 }}>Department</div><EInput value={activeProfile.dept} onChange={(v) => updProfile(activeProfile.id, { dept: v })} placeholder="e.g. MIE" /></div>
+                          <div><div className="eyebrow" style={{ marginBottom: 3 }}>Supervisor</div><EInput value={activeProfile.supervisor} onChange={(v) => updProfile(activeProfile.id, { supervisor: v })} placeholder="Professor" /></div>
+                          <div><div className="eyebrow" style={{ marginBottom: 3 }}>Mentor</div><EInput value={activeProfile.mentor} onChange={(v) => updProfile(activeProfile.id, { mentor: v })} placeholder="Assigned mentor" /></div>
+                          <div>
+                            <div className="eyebrow" style={{ marginBottom: 3 }}>Finance account</div>
+                            <button className={"mini" + (activeProfile.finance === "opened" ? " on" : "")}
+                              style={activeProfile.finance === "opened" ? { borderColor: T.ok, color: T.ok, background: T.surface } : {}}
+                              onClick={() => updProfile(activeProfile.id, { finance: activeProfile.finance === "opened" ? "pending" : "opened" })}>
+                              {activeProfile.finance === "opened" ? <><Check size={11} style={{ verticalAlign: -1 }} /> Opened</> : "Pending"}
+                            </button>
+                          </div>
+                        </div>
+                        <div className="eyebrow" style={{ margin: "12px 0 3px" }}>Notes</div>
+                        <textarea value={activeProfile.notes} onChange={(e) => updProfile(activeProfile.id, { notes: e.target.value })}
+                          placeholder="Anything worth remembering" rows={3}
+                          style={{ width: "100%", padding: "8px 10px", border: `1px solid ${T.hairline}`, borderRadius: 9, fontFamily: "inherit", fontSize: 13, background: T.surface, color: T.ink, resize: "vertical", boxSizing: "border-box" }} />
+                      </div>
+
+                      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                        <div className="card">
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                            <div className="eyebrow">Progress meetings · {(activeProfile.meetings || []).length}</div>
+                            <button className="mini" onClick={() => addSub(activeProfile.id, "meetings", { date: "", note: "" })}><Plus size={11} style={{ verticalAlign: -1 }} /> Meeting</button>
+                          </div>
+                          {(activeProfile.meetings || []).length === 0 && <div style={{ color: T.muted, fontSize: 12.5 }}>No meetings logged yet.</div>}
+                          {(activeProfile.meetings || []).map((m) => (
+                            <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${T.hairline}` }}>
+                              <EInput value={m.date} onChange={(v) => updSub(activeProfile.id, "meetings", m.id, { date: v })} placeholder="Date" mono w="80px" />
+                              <EInput value={m.note} onChange={(v) => updSub(activeProfile.id, "meetings", m.id, { note: v })} placeholder="Notes / action items" />
+                              <button onClick={() => rmSub(activeProfile.id, "meetings", m.id)} title="Remove" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={13} /></button>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="card">
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                            <div className="eyebrow">Deliverables · {(activeProfile.deliverables || []).filter((d) => d.status === "submitted").length}/{(activeProfile.deliverables || []).length} submitted</div>
+                            <button className="mini" onClick={() => addSub(activeProfile.id, "deliverables", { title: "", due: "", status: "pending" })}><Plus size={11} style={{ verticalAlign: -1 }} /> Deliverable</button>
+                          </div>
+                          {(activeProfile.deliverables || []).length === 0 && <div style={{ color: T.muted, fontSize: 12.5 }}>Nothing due yet.</div>}
+                          {(activeProfile.deliverables || []).map((d) => (
+                            <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${T.hairline}` }}>
+                              <EInput value={d.title} onChange={(v) => updSub(activeProfile.id, "deliverables", d.id, { title: v })} placeholder="Deliverable" />
+                              <EInput value={d.due} onChange={(v) => updSub(activeProfile.id, "deliverables", d.id, { due: v })} placeholder="Due" mono w="76px" />
+                              <select value={d.status} onChange={(e) => updSub(activeProfile.id, "deliverables", d.id, { status: e.target.value })}
+                                style={{ fontFamily: "IBM Plex Mono", fontSize: 11.5, padding: "4px 6px", border: `1px solid ${T.hairline}`, borderRadius: 8, background: T.surface, color: d.status === "submitted" ? T.ok : d.status === "late" ? T.danger : T.ink }}>
+                                <option value="pending">Pending</option>
+                                <option value="submitted">Submitted</option>
+                                <option value="late">Late</option>
+                              </select>
+                              <button onClick={() => rmSub(activeProfile.id, "deliverables", d.id)} title="Remove" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={13} /></button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </>
+          )}
+
           {view === "planning" && (
             <>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
                 <div>
                   <div className="h1 disp">Planning & critical dates</div>
-                  <div className="sub">The year's milestones, with a live check that every step is done before each one.</div>
+                  <div className="sub">The year's milestones — and an owned checklist for every event, from Kickoff to Demo Day.</div>
                 </div>
-                <select defaultValue="Cohort 6" style={{ fontFamily: "Inter", fontSize: 13, fontWeight: 600, padding: "8px 12px", border: `1px solid ${T.hairline}`, borderRadius: 10, background: T.surface, color: T.ink }}>
-                  <option value="Cohort 6">Cohort 6 · approaching Demo Day</option>
-                  <option value="Cohort 7">Cohort 7 · recruiting</option>
-                </select>
               </div>
 
               <div className="card" style={{ marginTop: 20 }}>
@@ -1142,32 +1660,63 @@ export default function App() {
 
               <div className="grid" style={{ gridTemplateColumns: "1.35fr 1fr", marginTop: 16 }}>
                 <div className="card">
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div>
-                      <div className="disp" style={{ fontWeight: 700, fontSize: 16 }}>Demo Day · Mar 27</div>
-                      <div style={{ color: T.muted, fontSize: 12.5 }}>{demoDone} of {demoTotal} steps done</div>
-                    </div>
-                    <div className="disp" style={{ fontSize: 30, fontWeight: 800, color: accent }}>{demoPct}%</div>
+                  <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
+                    {evList.map((ev) => {
+                      const d = ev.items.filter((i) => i.done).length;
+                      return (
+                        <button key={ev.id} className={"chip" + (activeEv && activeEv.id === ev.id ? " on" : "")} onClick={() => setActiveEvId(ev.id)}>
+                          {ev.name} <span className="mono" style={{ fontSize: 10, opacity: 0.8 }}>{d}/{ev.items.length}</span>
+                        </button>
+                      );
+                    })}
+                    <button className="chip" onClick={addEvent}><Plus size={12} style={{ verticalAlign: -2 }} /> Event</button>
                   </div>
-                  <div className="track" style={{ marginTop: 12 }}><div style={{ width: demoPct + "%", background: accent }} /></div>
-                  {demoGroups.map((group) => (
-                    <div key={group} style={{ marginTop: 16 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                        <div className="eyebrow">{group}</div>
-                        <button className="mini" style={{ fontSize: 11 }} onClick={() => addCheck(group)}><Plus size={11} style={{ verticalAlign: -1 }} /> Step</button>
-                      </div>
-                      {checklist.filter((c) => c.group === group).map((c) => (
-                        <div key={c.id} className={"chk" + (c.done ? " done" : "")} style={{ cursor: "default" }}>
-                          <button onClick={() => toggleCheck(c.id)} title="Check off" style={{ flex: "0 0 auto", display: "grid", placeItems: "center" }}>
-                            {c.done ? <CheckCircle2 size={17} style={{ color: accent }} /> : <Circle size={17} style={{ color: T.muted }} />}
-                          </button>
-                          <EInput value={c.label} onChange={(v) => updCheck(c.id, { label: v })} placeholder="Step" />
-                          <EInput value={c.owner} onChange={(v) => updCheck(c.id, { owner: v })} placeholder="Owner" w="120px" align="right" />
-                          <button onClick={() => rmCheck(c.id)} title="Remove" style={{ flex: "0 0 auto", color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={13} /></button>
+
+                  {activeEv ? (() => {
+                    const evDone = activeEv.items.filter((i) => i.done).length;
+                    const evTotal = activeEv.items.length;
+                    const evPct = evTotal ? Math.round((evDone / evTotal) * 100) : 0;
+                    const groups = [...new Set(activeEv.items.map((i) => i.group))];
+                    return (
+                      <>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <EInput value={activeEv.name} onChange={(v) => updEvent(activeEv.id, { name: v })} placeholder="Event name" />
+                              <EInput value={activeEv.date} onChange={(v) => updEvent(activeEv.id, { date: v })} placeholder="Date" mono w="86px" />
+                            </div>
+                            <div style={{ color: T.muted, fontSize: 12.5, paddingLeft: 8 }}>{evDone} of {evTotal} steps done</div>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, flex: "0 0 auto" }}>
+                            <div className="disp" style={{ fontSize: 30, fontWeight: 800, color: accent }}>{evPct}%</div>
+                            <button onClick={() => rmEvent(activeEv.id)} title="Remove this event" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button>
+                          </div>
                         </div>
-                      ))}
-                    </div>
-                  ))}
+                        <div className="track" style={{ marginTop: 12 }}><div style={{ width: evPct + "%", background: accent }} /></div>
+                        {groups.map((group) => (
+                          <div key={group} style={{ marginTop: 16 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                              <div className="eyebrow">{group}</div>
+                              <button className="mini" style={{ fontSize: 11 }} onClick={() => addEvItem(activeEv.id, group)}><Plus size={11} style={{ verticalAlign: -1 }} /> Step</button>
+                            </div>
+                            {activeEv.items.filter((c) => c.group === group).map((c) => (
+                              <div key={c.id} className={"chk" + (c.done ? " done" : "")} style={{ cursor: "default" }}>
+                                <button onClick={() => toggleEvItem(activeEv.id, c.id)} title="Check off" style={{ flex: "0 0 auto", display: "grid", placeItems: "center" }}>
+                                  {c.done ? <CheckCircle2 size={17} style={{ color: accent }} /> : <Circle size={17} style={{ color: T.muted }} />}
+                                </button>
+                                <EInput value={c.label} onChange={(v) => updEvItem(activeEv.id, c.id, { label: v })} placeholder="Step" />
+                                <EInput value={c.owner} onChange={(v) => updEvItem(activeEv.id, c.id, { owner: v })} placeholder="Owner" w="120px" align="right" />
+                                <button onClick={() => rmEvItem(activeEv.id, c.id)} title="Remove" style={{ flex: "0 0 auto", color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={13} /></button>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                        <button className="mini" style={{ marginTop: 14 }} onClick={() => addEvGroup(activeEv.id)}><Plus size={11} style={{ verticalAlign: -1 }} /> Group</button>
+                      </>
+                    );
+                  })() : (
+                    <div style={{ color: T.muted, fontSize: 13 }}>No events yet — add one above.</div>
+                  )}
                 </div>
 
                 <div className="card" style={{ alignSelf: "flex-start" }}>
@@ -1195,6 +1744,72 @@ export default function App() {
                     );
                   })}
                 </div>
+              </div>
+
+              <div className="card" style={{ marginTop: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 6 }}>
+                  <div>
+                    <div className="eyebrow">Demo Day results · cycle {viewedCycle.label}</div>
+                    <div style={{ color: T.muted, fontSize: 12.5, marginTop: 3 }}>Record each team's pitch, awards and Phase 2 funding — then publish the cohort into the success library.</div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {missingResults.length > 0 && (
+                      <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={addMissingResults}>
+                        <Plus size={13} /> Add {missingResults.length} selected team{missingResults.length === 1 ? "" : "s"}
+                      </button>
+                    )}
+                    <button className="btn" style={{ fontSize: 12, padding: "6px 14px" }} onClick={publishResults}>
+                      <Trophy size={13} /> Publish to library
+                    </button>
+                  </div>
+                </div>
+                {results.length === 0 ? (
+                  <div style={{ color: T.muted, fontSize: 13, padding: "10px 0" }}>
+                    No results yet. {missingResults.length ? "Use “Add selected teams” to pull in the cohort." : "Teams appear here once the pipeline has Selected outcomes."}
+                  </div>
+                ) : (
+                  <div style={{ overflowX: "auto" }}>
+                    <table>
+                      <thead><tr><th>Team</th><th>Pitched</th><th>Awards</th><th>Phase 2</th><th>Amount /yr</th><th>Note</th><th></th></tr></thead>
+                      <tbody>
+                        {results.map((r) => (
+                          <tr key={r.id}>
+                            <td style={{ minWidth: 170 }}><EInput value={r.team} onChange={(v) => updResult(r.id, { team: v })} placeholder="Team" /></td>
+                            <td>
+                              <button className={"mini" + (r.pitched ? " on" : "")} onClick={() => updResult(r.id, { pitched: !r.pitched })}>
+                                {r.pitched ? <><Check size={11} style={{ verticalAlign: -1 }} /> Yes</> : "—"}
+                              </button>
+                            </td>
+                            <td style={{ minWidth: 210 }}>
+                              <span style={{ display: "inline-flex", gap: 5, flexWrap: "wrap" }}>
+                                {AWARDS.map((a) => {
+                                  const on = r.awards.includes(a);
+                                  return (
+                                    <button key={a} className="mini" onClick={() => toggleResultAward(r.id, a)}
+                                      style={on ? { borderColor: AWARD_COLOR[a], color: a === "Most Innovative" ? T.ink : "#fff", background: AWARD_COLOR[a] } : {}}>{a}</button>
+                                  );
+                                })}
+                              </span>
+                            </td>
+                            <td>
+                              <button className={"mini" + (r.phase2 ? " on" : "")} onClick={() => updResult(r.id, { phase2: !r.phase2 })}>
+                                {r.phase2 ? "Phase 2" : "—"}
+                              </button>
+                            </td>
+                            <td style={{ minWidth: 96 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                                <span className="mono" style={{ color: T.muted, fontSize: 12 }}>$</span>
+                                <EInput value={r.amount} onChange={(v) => { const n = v.replace(/\D/g, "").slice(0, 5); updResult(r.id, { amount: n === "" ? "" : Math.min(Number(n), 50000) }); }} placeholder="0" mono w="70px" />
+                              </div>
+                            </td>
+                            <td style={{ minWidth: 160 }}><EInput value={r.note} onChange={(v) => updResult(r.id, { note: v })} placeholder="Traction note" /></td>
+                            <td><button onClick={() => rmResult(r.id)} title="Remove" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             </>
           )}
@@ -1248,6 +1863,78 @@ export default function App() {
                   }}><Plus size={15} /> Add</button>
                 </div>
               </div>
+            </>
+          )}
+
+          {view === "knowledge" && (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
+                <div>
+                  <div className="h1 disp">Knowledge base</div>
+                  <div className="sub">The team's answer sheet — rules, applicant FAQ, and ready-to-send email templates. Entries marked draft need Pascal's confirmation before quoting.</div>
+                </div>
+                <div className="tabs">
+                  <button className={kbTab === "rules" ? "on" : ""} onClick={() => setKbTab("rules")}>Rules & eligibility</button>
+                  <button className={kbTab === "faq" ? "on" : ""} onClick={() => setKbTab("faq")}>FAQ</button>
+                  <button className={kbTab === "templates" ? "on" : ""} onClick={() => setKbTab("templates")}>Templates</button>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 16, flexWrap: "wrap" }}>
+                <div className="search">
+                  <Search size={15} style={{ color: T.muted }} />
+                  <input placeholder="Search this tab…" value={kbQuery} onChange={(e) => setKbQuery(e.target.value)} />
+                </div>
+                <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={() => { addKb(kbTab); }}>
+                  <Plus size={13} /> Add entry
+                </button>
+              </div>
+
+              {(() => {
+                const q = kbQuery.trim().toLowerCase();
+                const items = kb.filter((k) => k.category === kbTab &&
+                  (!q || (k.title || "").toLowerCase().includes(q) || (k.body || "").toLowerCase().includes(q)));
+                if (!items.length)
+                  return <div className="card" style={{ marginTop: 16, color: T.muted, fontSize: 13.5 }}>Nothing here{q ? " matches that search" : " yet"} — add an entry.</div>;
+                return (
+                  <div className="scards" style={{ marginTop: 16 }}>
+                    {items.map((k) => (
+                      kbEdit === k.id ? (
+                        <div key={k.id} className="card" style={{ padding: 15, borderColor: T.burgundy, boxShadow: `0 0 0 1px ${T.tint} inset` }}>
+                          <input value={k.title} onChange={(e) => updKb(k.id, { title: e.target.value })} placeholder={kbTab === "faq" ? "Question" : "Title"}
+                            style={{ width: "100%", padding: "7px 9px", border: `1px solid ${T.hairline}`, borderRadius: 8, fontFamily: "inherit", fontSize: 14, fontWeight: 600, marginBottom: 8, background: T.surface, color: T.ink, boxSizing: "border-box" }} />
+                          <textarea value={k.body} onChange={(e) => updKb(k.id, { body: e.target.value })} placeholder={kbTab === "templates" ? "Email body — [brackets] for the parts to personalize" : "The answer, in plain language"} rows={7}
+                            style={{ width: "100%", padding: "7px 9px", border: `1px solid ${T.hairline}`, borderRadius: 8, fontFamily: kbTab === "templates" ? "'IBM Plex Mono', monospace" : "inherit", fontSize: 12.5, marginBottom: 10, background: T.surface, color: T.ink, resize: "vertical", boxSizing: "border-box" }} />
+                          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <button className={"mini" + (k.draft ? " on" : "")} style={k.draft ? { borderColor: T.warn, color: "#9a7b12", background: "#FBF1D8" } : {}}
+                              onClick={() => updKb(k.id, { draft: !k.draft })}>{k.draft ? "⚠ Draft" : "Confirmed"}</button>
+                            <button className="btn" style={{ flex: 1, justifyContent: "center", fontSize: 12, padding: "7px 12px" }} onClick={() => setKbEdit(null)}>Done</button>
+                            <button className="btn ghost" style={{ padding: "7px 10px" }} onClick={() => { rmKb(k.id); setKbEdit(null); }} title="Remove entry"><Trash2 size={14} /></button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div key={k.id} className="card" style={{ padding: 15 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                            <span className="disp" style={{ fontWeight: 700, fontSize: 14.5 }}>{k.title || "Untitled"}</span>
+                            <div style={{ display: "flex", gap: 6, alignItems: "center", flex: "0 0 auto" }}>
+                              {k.draft && <Pill bg="#FBF1D8" fg="#9a7b12">⚠ Draft</Pill>}
+                              <button onClick={() => setKbEdit(k.id)} title="Edit" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Pencil size={13} /></button>
+                            </div>
+                          </div>
+                          <div style={{ color: T.muted, fontSize: 12.5, marginTop: 7, lineHeight: 1.5, whiteSpace: "pre-wrap", fontFamily: k.category === "templates" ? "'IBM Plex Mono', monospace" : "inherit" }}>
+                            {k.body}
+                          </div>
+                          {k.category === "templates" && (
+                            <button className="mini" style={{ marginTop: 11 }} onClick={() => copyKb(k)}>
+                              <Copy size={11} style={{ verticalAlign: -1, marginRight: 4 }} />{copiedId === k.id ? "Copied ✓" : "Copy email"}
+                            </button>
+                          )}
+                        </div>
+                      )
+                    ))}
+                  </div>
+                );
+              })()}
             </>
           )}
 
