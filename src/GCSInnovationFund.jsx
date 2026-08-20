@@ -8,7 +8,7 @@ import {
   Check, Clock, X, Sparkles, GraduationCap,
   UploadCloud, RefreshCw, CalendarCheck, Trophy, Pizza,
   CheckCircle2, Circle, Search, Award, Plus, Trash2, Pencil,
-  ChevronDown, Download, Upload, Settings, AlertTriangle, Users, BookOpen, Copy, Wallet,
+  ChevronDown, ChevronUp, ChevronsUp, ChevronsDown, Download, Upload, Settings, AlertTriangle, Users, BookOpen, Copy, Wallet,
 } from "lucide-react";
 
 /* ============================================================
@@ -121,8 +121,10 @@ tr:last-child td{border-bottom:none}
 .chk.done .lbl{text-decoration:line-through;color:${T.muted}}
 .chk .owner{font-size:10.5px;color:${T.muted};margin-left:auto;font-family:'IBM Plex Mono';white-space:nowrap}
 .chip{font-size:12px;font-weight:600;padding:6px 12px;border-radius:999px;border:1px solid ${T.hairline};
-  background:${T.surface};color:${T.muted}}
+  background:${T.surface};color:${T.muted};max-width:230px;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;vertical-align:middle}
 .chip.on{border-color:var(--accent);color:#fff;background:var(--accent)}
+.chiprow{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .calstrip{display:grid;grid-template-columns:repeat(12,1fr);gap:6px;overflow-x:auto}
 .calcell{border:1px solid ${T.hairline};border-radius:10px;padding:8px 6px;min-height:78px;
   background:${T.surface};min-width:62px}
@@ -314,17 +316,17 @@ const AWARD_COLOR = { "Judges": T.burgundy, "Most Innovative": T.gold, "Audience
 const AWARDS = ["Judges", "Most Innovative", "Audience", "Public's Choice"];
 
 const SESSIONS = [
-  { date:"Sep 12", title:"Kickoff — rules, entrepreneurship, VC primer", who:"Pascal Dubois · Arman · Riccardo (D3)", kind:"milestone", done:true },
-  { date:"Oct 3",  title:"Fundamentals of entrepreneurship", who:"Ehsan Derayati", kind:"talk", done:true },
-  { date:"Oct 17", title:"Homecoming — alumni mixer", who:"Past cohorts", kind:"community", done:true },
-  { date:"Nov 7",  title:"VC funding", who:"Riccardo (D3)", kind:"talk", done:false },
-  { date:"Nov 21", title:"Storytelling", who:"Johanne Pelletier", kind:"talk", done:false },
-  { date:"Dec 5",  title:"Monthly progress meetings", who:"Program team × teams", kind:"meeting", done:false },
-  { date:"Jan 16", title:"Philosophy of entrepreneurship", who:"Pierre Chamberland", kind:"talk", done:false },
-  { date:"Feb 6",  title:"From the field — Innovation Fund graduate", who:"Alumni guest", kind:"talk", done:false },
-  { date:"Feb 20", title:"Intellectual property", who:"Denis Keseris", kind:"talk", done:false },
-  { date:"Mar 6",  title:"Extra session (topic TBD)", who:"To be confirmed", kind:"talk", done:false },
-  { date:"Mar 27", title:"Demo Day", who:"All teams", kind:"milestone", done:false },
+  { date:"Sep 12", time:"16:00–17:00", place:"EV2.309", title:"Kickoff — rules, entrepreneurship, VC primer", who:"Pascal Dubois · Arman · Riccardo (D3)", kind:"milestone", done:true },
+  { date:"Oct 3",  time:"16:00–18:00", place:"EV2.309", title:"Fundamentals of entrepreneurship", who:"Ehsan Derayati", kind:"talk", done:true },
+  { date:"Oct 17", time:"16:00–18:00", place:"EV2.309", title:"Homecoming — alumni mixer", who:"Past cohorts", kind:"community", done:true },
+  { date:"Nov 7",  time:"16:00–18:00", place:"EV2.309", title:"VC funding", who:"Riccardo (D3)", kind:"talk", done:false },
+  { date:"Nov 21", time:"16:00–18:00", place:"EV2.309", title:"Storytelling", who:"Johanne Pelletier", kind:"talk", done:false },
+  { date:"Dec 5",  time:"16:00–18:00", place:"EV2.309", title:"Monthly progress meetings", who:"Program team × teams", kind:"meeting", done:false },
+  { date:"Jan 16", time:"16:00–18:00", place:"EV2.309", title:"Philosophy of entrepreneurship", who:"Pierre Chamberland", kind:"talk", done:false },
+  { date:"Feb 6",  time:"16:00–18:00", place:"EV2.309", title:"From the field — Innovation Fund graduate", who:"Alumni guest", kind:"talk", done:false },
+  { date:"Feb 20", time:"16:00–18:00", place:"EV2.309", title:"Intellectual property", who:"Denis Keseris", kind:"talk", done:false },
+  { date:"Mar 6",  time:"16:00–18:00", place:"EV2.309", title:"Extra session (topic TBD)", who:"To be confirmed", kind:"talk", done:false },
+  { date:"Mar 27", time:"TBD", place:"TBD", title:"Demo Day", who:"All teams", kind:"milestone", done:false },
 ];
 
 const SEED_ALUMNI = [
@@ -956,6 +958,60 @@ export default function App() {
     setRoad((r) => r.map((t, j) => (j === i ? { ...t, status: order[(order.indexOf(t.status) + 1) % 3] } : t)));
   };
 
+  /* Reorder programming sessions without retyping them. */
+  const moveSession = (i, dir) => setSessions((ss) => {
+    const j = i + dir;
+    if (j < 0 || j >= ss.length) return ss;
+    const c = [...ss]; [c[i], c[j]] = [c[j], c[i]]; return c;
+  });
+  const moveSessionEnd = (i, toTop) => setSessions((ss) => {
+    if (i < 0 || i >= ss.length) return ss;
+    const c = [...ss]; const [it] = c.splice(i, 1);
+    toTop ? c.unshift(it) : c.push(it); return c;
+  });
+
+  /* Print the finalized programming as a "Calendar of Activities" sheet
+     matching the Gina Cody template (Date · Time · Place · Activity). */
+  const printCalendar = () => {
+    const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const rows = sessions.map((s) => {
+      const activity = esc(s.title) + (s.who && s.who !== "TBD" ? ` — <span class="who">${esc(s.who)}</span>` : "");
+      return `<tr><td class="date">${esc(s.date)}</td><td class="time">${esc(s.time)}</td><td class="place">${esc(s.place)}</td><td>${activity}</td></tr>`;
+    }).join("");
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Calendar of Activities — ${esc(viewedCycle.label)}</title>
+<style>
+  @page { margin: 0.7in; }
+  body { font-family: Georgia, 'Times New Roman', serif; color: #2b2b2b; margin: 0; }
+  .head { border-bottom: 3px solid ${T.burgundy}; padding-bottom: 10px; margin-bottom: 18px; }
+  h1 { font-size: 20px; margin: 0; color: ${T.burgundy}; letter-spacing: .01em; }
+  .sub { font-size: 13px; color: #555; margin-top: 3px; }
+  table { border-collapse: collapse; width: 100%; }
+  th { background: ${T.burgundy}; color: #fff; font-family: Arial, sans-serif; font-size: 10.5px;
+       letter-spacing: .06em; text-transform: uppercase; text-align: left; padding: 8px 10px; }
+  td { border-bottom: 1px solid #ddd; padding: 9px 10px; font-size: 12.5px; vertical-align: top; }
+  tr:nth-child(even) td { background: #faf8f5; }
+  .date { white-space: nowrap; font-weight: bold; width: 130px; }
+  .time { white-space: nowrap; font-family: Arial, sans-serif; font-size: 11.5px; color: #444; width: 96px; }
+  .place { white-space: nowrap; font-family: Arial, sans-serif; font-size: 11.5px; color: #444; width: 82px; }
+  .who { color: #555; }
+  .foot { margin-top: 16px; font-size: 10.5px; color: #888; font-family: Arial, sans-serif; }
+</style></head><body>
+  <div class="head">
+    <h1>Calendar of Activities</h1>
+    <div class="sub">GCS Student Innovation Fund — Phase 1 · Cycle ${esc(viewedCycle.label)}</div>
+  </div>
+  <table><thead><tr><th>Date</th><th>Time</th><th>Place</th><th>Activity</th></tr></thead>
+  <tbody>${rows}</tbody></table>
+  <div class="foot">Gina Cody School of Engineering and Computer Science · Concordia University</div>
+</body></html>`;
+    const w = window.open("", "_blank");
+    if (!w) { window.alert("Please allow pop-ups for this site to print the calendar."); return; }
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+    setTimeout(() => { try { w.print(); } catch (e) {} }, 350);
+  };
+
   /* inline editing across promo / planning */
   const [editingCall, setEditingCall] = useState(null);
   const [classMsg, setClassMsg] = useState(null);
@@ -1093,11 +1149,11 @@ export default function App() {
     { id: "calls", label: "Calls & promo", Icon: Megaphone },
     { id: "selection", label: "Selection", Icon: ListChecks },
     { id: "teams", label: "Teams", Icon: Users },
+    { id: "phase2", label: "Phase II", Icon: Wallet },
     { id: "planning", label: "Planning", Icon: CalendarCheck },
     { id: "programming", label: "Programming", Icon: CalendarDays },
     { id: "knowledge", label: "Knowledge", Icon: BookOpen },
     { id: "cohorts", label: "Cohorts", Icon: Trophy },
-    { id: "phase2", label: "Phase II", Icon: Wallet },
   ];
 
   const agreedPill = (a) =>
@@ -1562,9 +1618,9 @@ export default function App() {
                 </div>
               ) : (
                 <>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 18 }}>
-                    {profiles.map((p) => (
-                      <button key={p.id} className={"chip" + (activeProfile && activeProfile.id === p.id ? " on" : "")} onClick={() => setActiveProfileId(p.id)}>
+                  <div className="chiprow" style={{ marginTop: 18 }}>
+                    {[...profiles].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => (
+                      <button key={p.id} title={p.name || "Untitled"} className={"chip" + (activeProfile && activeProfile.id === p.id ? " on" : "")} onClick={() => setActiveProfileId(p.id)}>
                         {p.name || "Untitled"}
                       </button>
                     ))}
@@ -1874,7 +1930,12 @@ export default function App() {
                   <div className="h1 disp">Programming · Sep → Mar</div>
                   <div className="sub">The presentation series and monthly check-ins that lead each cohort to Demo Day. Tick a session once it's held.</div>
                 </div>
-                <div className="mono" style={{ fontSize: 12, color: T.muted }}>{sessions.filter((s) => s.done).length}/{sessions.length} held</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <span className="mono" style={{ fontSize: 12, color: T.muted }}>{sessions.filter((s) => s.done).length}/{sessions.length} held</span>
+                  <button className="btn ghost" style={{ fontSize: 12, padding: "7px 13px" }} onClick={printCalendar} title="Open a printable Calendar of Activities">
+                    <Download size={14} /> Print calendar
+                  </button>
+                </div>
               </div>
               <div className="card" style={{ marginTop: 20 }}>
                 <div>
@@ -1885,6 +1946,7 @@ export default function App() {
                         <span style={{ width: 12, height: 12, borderRadius: 999, background: s.done ? color : T.surface, boxShadow: `0 0 0 2px ${color}`, marginTop: 9, flex: "0 0 12px" }} />
                         <div style={{ width: 72, flex: "0 0 72px" }}>
                           <EInput value={s.date} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, date: v } : x)))} placeholder="Date" mono />
+                          <EInput value={s.time} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, time: v } : x)))} placeholder="Time" mono />
                         </div>
                         <div style={{ flex: 1, minWidth: 160 }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -1892,6 +1954,16 @@ export default function App() {
                             {s.kind === "milestone" && <Sparkles size={14} style={{ color: accent, flex: "0 0 auto" }} />}
                           </div>
                           <EInput value={s.who} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, who: v } : x)))} placeholder="Speaker" />
+                        </div>
+                        <div style={{ width: 84, flex: "0 0 84px", marginTop: 1 }}>
+                          <div className="eyebrow" style={{ fontSize: 9, marginBottom: 1 }}>Place</div>
+                          <EInput value={s.place} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, place: v } : x)))} placeholder="Room" mono />
+                        </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2, marginTop: 4, flex: "0 0 auto" }}>
+                          <button title="Move to top" disabled={i === 0} onClick={() => moveSessionEnd(i, true)} style={{ color: T.muted, display: "grid", placeItems: "center", padding: 2, opacity: i === 0 ? 0.3 : 1, cursor: i === 0 ? "default" : "pointer" }}><ChevronsUp size={13} /></button>
+                          <button title="Move to bottom" disabled={i === sessions.length - 1} onClick={() => moveSessionEnd(i, false)} style={{ color: T.muted, display: "grid", placeItems: "center", padding: 2, opacity: i === sessions.length - 1 ? 0.3 : 1, cursor: i === sessions.length - 1 ? "default" : "pointer" }}><ChevronsDown size={13} /></button>
+                          <button title="Move up" disabled={i === 0} onClick={() => moveSession(i, -1)} style={{ color: T.muted, display: "grid", placeItems: "center", padding: 2, opacity: i === 0 ? 0.3 : 1, cursor: i === 0 ? "default" : "pointer" }}><ChevronUp size={14} /></button>
+                          <button title="Move down" disabled={i === sessions.length - 1} onClick={() => moveSession(i, 1)} style={{ color: T.muted, display: "grid", placeItems: "center", padding: 2, opacity: i === sessions.length - 1 ? 0.3 : 1, cursor: i === sessions.length - 1 ? "default" : "pointer" }}><ChevronDown size={14} /></button>
                         </div>
                         <button onClick={() => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, done: !x.done } : x)))}
                           className="mini" style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap", borderColor: s.done ? T.ok : T.hairline, color: s.done ? T.ok : T.muted }} title="Mark held">
@@ -2151,12 +2223,12 @@ export default function App() {
                 </div>
               ) : (
                 <>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 18 }}>
-                    {phase2.map((p) => {
+                  <div className="chiprow" style={{ marginTop: 18 }}>
+                    {[...phase2].sort((a, b) => (a.cohort || "").localeCompare(b.cohort || "") || (a.team || "").localeCompare(b.team || "")).map((p) => {
                       const paid = p2Paid(p);
                       const full = Number(p.awarded) > 0 && paid >= Number(p.awarded);
                       return (
-                        <button key={p.id} className={"chip" + (activeP2 && activeP2.id === p.id ? " on" : "")} onClick={() => setActiveP2Id(p.id)}>
+                        <button key={p.id} title={p.team || "Untitled"} className={"chip" + (activeP2 && activeP2.id === p.id ? " on" : "")} onClick={() => setActiveP2Id(p.id)} style={{ maxWidth: 260 }}>
                           {p.team || "Untitled"}
                           <span className="mono" style={{ fontSize: 10, marginLeft: 6, color: full ? T.ok : T.muted }}>
                             {full ? "paid" : `$${paid.toLocaleString()}/${Number(p.awarded) ? "$" + Number(p.awarded).toLocaleString() : "—"}`}
