@@ -8,7 +8,7 @@ import {
   Check, Clock, X, Sparkles, GraduationCap,
   UploadCloud, RefreshCw, CalendarCheck, Trophy, Pizza,
   CheckCircle2, Circle, Search, Award, Plus, Trash2, Pencil,
-  ChevronDown, Download, Upload, Settings, AlertTriangle, Users, BookOpen, Copy,
+  ChevronDown, Download, Upload, Settings, AlertTriangle, Users, BookOpen, Copy, Wallet,
 } from "lucide-react";
 
 /* ============================================================
@@ -149,7 +149,7 @@ const CURRENT = NOW.toLocaleString("en-US", { month: "short" }); // e.g. "Jun" �
 const ARRAY_SECTIONS = new Set([
   "cycles", "calls", "teams", "classes", "pizza", "sessions",
   "events", "demochecklist", "road", "cohorts", "alumni", "results",
-  "eventChecklists", "teamProfiles", "kb",
+  "eventChecklists", "teamProfiles", "kb", "phase2Teams",
 ]);
 
 /* cycles: the registry lives in cloud storage (global scope); this is only the first-run seed */
@@ -237,7 +237,7 @@ const DEMO_CHECKLIST = [
     ["Secure photographer", "Program team"],
   ]},
   { group: "Invitations", items: [
-    ["Validate judges with Dr. Shihab", "Program team"],
+    ["Validate judges with Dr. Nik-Bakht", "Program team"],
     ["Send judge invitations & record confirmations", "Program team"],
     ["Send calendar hold to judges", "Program team"],
     ["Invite mentors", "Program team"],
@@ -553,6 +553,23 @@ const KB_SEED = [
     body: "Subject: Homecoming — come meet the new cohort\n\nHi [name],\n\nEach October we bring past Innovation Fund teams back to meet the incoming cohort. This year: [date, time, place]. Food's on us.\n\nCan we count you in? [RSVP link]\n\n[Name]" },
 ];
 
+/* ---------- phase 2: funded teams tracked across cohorts (global scope).
+   Each carries the Maturation-year award, a payment ledger, and a meetings log.
+   Seeded from the known Cohort 6 & 7 winners; amounts are the awards, paid
+   records start empty for Pascal to fill as disbursements happen. */
+const PHASE2_SEED = [
+  { id: "p2-recon", team: "Re:CON", cohort: "Cohort 6", awarded: 25000, status: "active",
+    note: "Most Innovative — automated fiber placement", payments: [], meetings: [] },
+  { id: "p2-goni", team: "GoniVision", cohort: "Cohort 6", awarded: 25000, status: "active",
+    note: "Public's Choice + Judges' — AI goniometry", payments: [], meetings: [] },
+  { id: "p2-misc", team: "MiSC Robotics", cohort: "Cohort 7", awarded: 20000, status: "active",
+    note: "Most Innovative + Judges' — affordable lab robots", payments: [], meetings: [] },
+  { id: "p2-aegis", team: "AEGIS", cohort: "Cohort 7", awarded: 20000, status: "active",
+    note: "Public's Choice + Judges' — cybersecurity training", payments: [], meetings: [] },
+  { id: "p2-harv", team: "Har-V", cohort: "Cohort 7", awarded: 20000, status: "active",
+    note: "Judges' — manufacturing knowledge memory", payments: [], meetings: [] },
+];
+
 /* ============================================================ */
 export default function App() {
   const [view, setView] = useState("dashboard");
@@ -589,6 +606,8 @@ export default function App() {
   const [profiles, setProfiles] = useCloudSection("teamProfiles", [], cycleId);
   const [activeProfileId, setActiveProfileId] = useState(null);
   const [kb, setKb] = useCloudSection("kb", KB_SEED, "global");
+  const [phase2, setPhase2] = useCloudSection("phase2Teams", PHASE2_SEED, "global");
+  const [activeP2Id, setActiveP2Id] = useState(null);
   const [kbTab, setKbTab] = useState("rules");
   const [kbQuery, setKbQuery] = useState("");
   const [copiedId, setCopiedId] = useState(null);
@@ -899,6 +918,39 @@ export default function App() {
     }
   };
 
+  /* ---- phase 2: funded-team tracking (payments + meetings) ---- */
+  const activeP2 = phase2.find((p) => p.id === activeP2Id) || phase2[0] || null;
+  const p2Paid = (p) => (p.payments || []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const updP2 = (id, patch) => setPhase2((ps) => ps.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  const addP2 = () => {
+    const p = { id: uid(), team: "", cohort: viewedCycle.label, awarded: "", status: "active", note: "", payments: [], meetings: [] };
+    setPhase2((ps) => [...ps, p]);
+    setActiveP2Id(p.id);
+  };
+  const rmP2 = (id) => {
+    const p = phase2.find((x) => x.id === id);
+    if (!p) return;
+    if (!window.confirm(`Remove ${p.team || "this team"} from Phase II tracking? Payment and meeting records go with it.`)) return;
+    setPhase2((ps) => ps.filter((x) => x.id !== id));
+    if (activeP2Id === id) setActiveP2Id(null);
+  };
+  const updP2Sub = (pid, key, subId, patch) =>
+    updP2(pid, { [key]: (phase2.find((p) => p.id === pid)?.[key] || []).map((x) => (x.id === subId ? { ...x, ...patch } : x)) });
+  const addP2Sub = (pid, key, blank) =>
+    updP2(pid, { [key]: [...(phase2.find((p) => p.id === pid)?.[key] || []), { id: uid(), ...blank }] });
+  const rmP2Sub = (pid, key, subId) =>
+    updP2(pid, { [key]: (phase2.find((p) => p.id === pid)?.[key] || []).filter((x) => x.id !== subId) });
+  const missingP2 = results.filter(
+    (r) => r.phase2 && (r.team || "").trim() && !phase2.some((p) => p.team && p.team.toLowerCase() === r.team.toLowerCase())
+  );
+  const pullP2FromResults = () => {
+    if (!missingP2.length) return;
+    setPhase2((ps) => [...ps, ...missingP2.map((r) => ({
+      id: uid(), team: r.team, cohort: viewedCycle.label,
+      awarded: Number(r.amount) || "", status: "active", note: (r.note || ""), payments: [], meetings: [],
+    }))]);
+  };
+
   const cycleRoad = (i) => {
     const order = ["notstarted", "progress", "ready"];
     setRoad((r) => r.map((t, j) => (j === i ? { ...t, status: order[(order.indexOf(t.status) + 1) % 3] } : t)));
@@ -1045,6 +1097,7 @@ export default function App() {
     { id: "programming", label: "Programming", Icon: CalendarDays },
     { id: "knowledge", label: "Knowledge", Icon: BookOpen },
     { id: "cohorts", label: "Cohorts", Icon: Trophy },
+    { id: "phase2", label: "Phase II", Icon: Wallet },
   ];
 
   const agreedPill = (a) =>
@@ -2059,6 +2112,141 @@ export default function App() {
                     </table>
                   </div>
                 </div>
+              )}
+            </>
+          )}
+
+          {view === "phase2" && (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
+                <div>
+                  <div className="h1 disp">Phase II · funded teams</div>
+                  <div className="sub">The Maturation-year teams — track disbursement of their award and the support meetings held with each.</div>
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {missingP2.length > 0 && (
+                    <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={pullP2FromResults}>
+                      <Plus size={13} /> Add {missingP2.length} from Demo Day
+                    </button>
+                  )}
+                  <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={addP2}><Plus size={13} /> Add team</button>
+                </div>
+              </div>
+
+              {(() => {
+                const totAwarded = phase2.reduce((s, p) => s + (Number(p.awarded) || 0), 0);
+                const totPaid = phase2.reduce((s, p) => s + p2Paid(p), 0);
+                return (
+                  <div className="grid" style={{ gridTemplateColumns: "repeat(3,1fr)", marginTop: 18, gap: 12 }}>
+                    <Stat n={phase2.filter((p) => p.status === "active").length} l="Active Phase II teams" accent={accent} />
+                    <Stat n={`$${totPaid.toLocaleString()}`} l="Disbursed to date" accent={accent} />
+                    <Stat n={`$${Math.max(totAwarded - totPaid, 0).toLocaleString()}`} l="Committed, not yet paid" accent={accent} />
+                  </div>
+                );
+              })()}
+
+              {phase2.length === 0 ? (
+                <div className="card" style={{ marginTop: 16, color: T.muted, fontSize: 13.5 }}>
+                  No Phase II teams yet. Pull them in from a cycle's Demo Day results, or add one manually.
+                </div>
+              ) : (
+                <>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 18 }}>
+                    {phase2.map((p) => {
+                      const paid = p2Paid(p);
+                      const full = Number(p.awarded) > 0 && paid >= Number(p.awarded);
+                      return (
+                        <button key={p.id} className={"chip" + (activeP2 && activeP2.id === p.id ? " on" : "")} onClick={() => setActiveP2Id(p.id)}>
+                          {p.team || "Untitled"}
+                          <span className="mono" style={{ fontSize: 10, marginLeft: 6, color: full ? T.ok : T.muted }}>
+                            {full ? "paid" : `$${paid.toLocaleString()}/${Number(p.awarded) ? "$" + Number(p.awarded).toLocaleString() : "—"}`}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {activeP2 && (() => {
+                    const paid = p2Paid(activeP2);
+                    const awarded = Number(activeP2.awarded) || 0;
+                    const pct = awarded ? Math.min(Math.round((paid / awarded) * 100), 100) : 0;
+                    const remaining = Math.max(awarded - paid, 0);
+                    return (
+                      <div className="grid" style={{ gridTemplateColumns: "1fr 1.25fr", marginTop: 14 }}>
+                        <div className="card">
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                            <div className="eyebrow">Team</div>
+                            <button onClick={() => rmP2(activeP2.id)} title="Remove from tracking" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button>
+                          </div>
+                          <EInput value={activeP2.team} onChange={(v) => updP2(activeP2.id, { team: v })} placeholder="Team name" />
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 10 }}>
+                            <div><div className="eyebrow" style={{ marginBottom: 3 }}>Cohort</div><EInput value={activeP2.cohort} onChange={(v) => updP2(activeP2.id, { cohort: v })} placeholder="Cohort 7" /></div>
+                            <div>
+                              <div className="eyebrow" style={{ marginBottom: 3 }}>Status</div>
+                              <button className={"mini" + (activeP2.status === "completed" ? " on" : "")}
+                                style={activeP2.status === "completed" ? { borderColor: T.ok, color: T.ok, background: T.surface } : {}}
+                                onClick={() => updP2(activeP2.id, { status: activeP2.status === "completed" ? "active" : "completed" })}>
+                                {activeP2.status === "completed" ? "Completed" : "Active"}
+                              </button>
+                            </div>
+                          </div>
+                          <div className="eyebrow" style={{ margin: "12px 0 3px" }}>Award ($/yr)</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                            <span className="mono" style={{ color: T.muted }}>$</span>
+                            <EInput value={activeP2.awarded} onChange={(v) => { const n = v.replace(/\D/g, "").slice(0, 6); updP2(activeP2.id, { awarded: n === "" ? "" : Math.min(Number(n), 50000) }); }} placeholder="0" mono w="90px" />
+                          </div>
+                          <div style={{ marginTop: 14 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                              <span className="eyebrow">Disbursed</span>
+                              <span className="mono" style={{ fontSize: 12.5, color: remaining === 0 && awarded > 0 ? T.ok : T.ink }}>
+                                ${paid.toLocaleString()}{awarded ? ` of $${awarded.toLocaleString()}` : ""}
+                              </span>
+                            </div>
+                            <div className="track" style={{ marginTop: 7 }}><div style={{ width: pct + "%", background: remaining === 0 && awarded > 0 ? T.ok : accent }} /></div>
+                            {awarded > 0 && <div style={{ color: T.muted, fontSize: 11.5, marginTop: 5 }}>{remaining > 0 ? `$${remaining.toLocaleString()} remaining` : "Fully disbursed"}</div>}
+                          </div>
+                          <div className="eyebrow" style={{ margin: "12px 0 3px" }}>Note</div>
+                          <textarea value={activeP2.note} onChange={(e) => updP2(activeP2.id, { note: e.target.value })} placeholder="Awards, focus, anything worth remembering" rows={3}
+                            style={{ width: "100%", padding: "8px 10px", border: `1px solid ${T.hairline}`, borderRadius: 9, fontFamily: "inherit", fontSize: 13, background: T.surface, color: T.ink, resize: "vertical", boxSizing: "border-box" }} />
+                        </div>
+
+                        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                          <div className="card">
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                              <div className="eyebrow">Payments · {(activeP2.payments || []).length}</div>
+                              <button className="mini" onClick={() => addP2Sub(activeP2.id, "payments", { date: "", amount: "", note: "" })}><Plus size={11} style={{ verticalAlign: -1 }} /> Payment</button>
+                            </div>
+                            {(activeP2.payments || []).length === 0 && <div style={{ color: T.muted, fontSize: 12.5 }}>No payments recorded yet.</div>}
+                            {(activeP2.payments || []).map((pay) => (
+                              <div key={pay.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${T.hairline}` }}>
+                                <EInput value={pay.date} onChange={(v) => updP2Sub(activeP2.id, "payments", pay.id, { date: v })} placeholder="Date" mono w="82px" />
+                                <span className="mono" style={{ color: T.muted, fontSize: 12 }}>$</span>
+                                <EInput value={pay.amount} onChange={(v) => { const n = v.replace(/\D/g, "").slice(0, 6); updP2Sub(activeP2.id, "payments", pay.id, { amount: n === "" ? "" : Number(n) }); }} placeholder="0" mono w="70px" />
+                                <EInput value={pay.note} onChange={(v) => updP2Sub(activeP2.id, "payments", pay.id, { note: v })} placeholder="Tranche / milestone" />
+                                <button onClick={() => rmP2Sub(activeP2.id, "payments", pay.id)} title="Remove" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={13} /></button>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="card">
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                              <div className="eyebrow">Support meetings · {(activeP2.meetings || []).length}</div>
+                              <button className="mini" onClick={() => addP2Sub(activeP2.id, "meetings", { date: "", note: "" })}><Plus size={11} style={{ verticalAlign: -1 }} /> Meeting</button>
+                            </div>
+                            {(activeP2.meetings || []).length === 0 && <div style={{ color: T.muted, fontSize: 12.5 }}>No meetings logged yet.</div>}
+                            {(activeP2.meetings || []).map((m) => (
+                              <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${T.hairline}` }}>
+                                <EInput value={m.date} onChange={(v) => updP2Sub(activeP2.id, "meetings", m.id, { date: v })} placeholder="Date" mono w="82px" />
+                                <EInput value={m.note} onChange={(v) => updP2Sub(activeP2.id, "meetings", m.id, { note: v })} placeholder="Notes / action items" />
+                                <button onClick={() => rmP2Sub(activeP2.id, "meetings", m.id)} title="Remove" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={13} /></button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </>
               )}
             </>
           )}
