@@ -1959,6 +1959,17 @@ export default function App() {
                           <div className="eyebrow" style={{ fontSize: 9, marginBottom: 1 }}>Place</div>
                           <EInput value={s.place} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, place: v } : x)))} placeholder="Room" mono />
                         </div>
+                        <div style={{ width: 112, flex: "0 0 112px", marginTop: 1, display: "flex", flexDirection: "column", gap: 3 }}>
+                          <div className="eyebrow" style={{ fontSize: 9, marginBottom: 1 }}>Room booking</div>
+                          <button className="mini" onClick={() => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, roomRequested: !x.roomRequested } : x)))}
+                            style={{ fontSize: 10.5, padding: "3px 7px", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap", borderColor: s.roomRequested ? T.info : T.hairline, color: s.roomRequested ? T.info : T.muted }} title="Room request sent to Facilities">
+                            {s.roomRequested ? <Check size={11} /> : <Circle size={10} />} Request sent
+                          </button>
+                          <button className="mini" onClick={() => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, roomConfirmed: !x.roomConfirmed } : x)))}
+                            style={{ fontSize: 10.5, padding: "3px 7px", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap", borderColor: s.roomConfirmed ? T.ok : T.hairline, color: s.roomConfirmed ? T.ok : T.muted }} title="Room booking confirmed">
+                            {s.roomConfirmed ? <CheckCircle2 size={11} /> : <Circle size={10} />} Confirmed
+                          </button>
+                        </div>
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2, marginTop: 4, flex: "0 0 auto" }}>
                           <button title="Move to top" disabled={i === 0} onClick={() => moveSessionEnd(i, true)} style={{ color: T.muted, display: "grid", placeItems: "center", padding: 2, opacity: i === 0 ? 0.3 : 1, cursor: i === 0 ? "default" : "pointer" }}><ChevronsUp size={13} /></button>
                           <button title="Move to bottom" disabled={i === sessions.length - 1} onClick={() => moveSessionEnd(i, false)} style={{ color: T.muted, display: "grid", placeItems: "center", padding: 2, opacity: i === sessions.length - 1 ? 0.3 : 1, cursor: i === sessions.length - 1 ? "default" : "pointer" }}><ChevronsDown size={13} /></button>
