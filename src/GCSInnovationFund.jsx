@@ -147,11 +147,13 @@ const PHASE_BY_MONTH = {
 };
 const NOW = new Date();
 const CURRENT = NOW.toLocaleString("en-US", { month: "short" }); // e.g. "Jun" — updates automatically
-/* Every stored section holds a list; used to sanity-check restored backups. */
+/* Sections stored as lists; used to sanity-check restored backups.
+   Note: `attendance` is deliberately absent — it is an object map
+   (sessionId → {personKey: status}), not a list. */
 const ARRAY_SECTIONS = new Set([
   "cycles", "calls", "teams", "classes", "pizza", "sessions",
   "events", "demochecklist", "road", "cohorts", "alumni", "results",
-  "eventChecklists", "teamProfiles", "kb", "phase2Teams", "attendance",
+  "eventChecklists", "teamProfiles", "kb", "phase2Teams",
 ]);
 
 /* cycles: the registry lives in cloud storage (global scope); this is only the first-run seed */
@@ -702,7 +704,8 @@ export default function App() {
     if (!window.confirm(`Start cycle ${label}? ${activeCycle.label} becomes browsable history, and ${label} starts with fresh templates.`)) return;
     const templates = {
       teams: [], classes: [], pizza: [], road: [], results: [], teamProfiles: [],
-      sessions: SESSIONS.map((s) => ({ ...s, done: false })),
+      attendance: {},
+      sessions: SESSIONS.map((s) => ({ ...s, sid: uid(), done: false })),
       eventChecklists: DEFAULT_EVENTS(),
       events: CRITICAL,
       calls: callList.map((c) => ({ ...c, subs: 0 })),
@@ -979,12 +982,12 @@ export default function App() {
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean)
-      .map((line) => {
+      .map((line, li) => {
         const em = line.match(/[\w.+-]+@[\w.-]+\.\w+/);
         const email = em ? em[0] : "";
         let name = line.replace(email, "").replace(/\s{2,}/g, " ").trim();
         name = name.replace(/[\s,;:·|\-–]+$/, "").trim();
-        return { key: (email || name).toLowerCase(), name: name || email, email, team: p.name || "Untitled", profileId: p.id };
+        return { rowId: `${p.id}:${li}`, key: (email || name).toLowerCase(), name: name || email, email, team: p.name || "Untitled", profileId: p.id };
       })
   );
   const attFor = (sid) => (attendance && attendance[sid]) || {};
@@ -1091,6 +1094,30 @@ export default function App() {
        <table class="grid"><thead><tr><th class="n">Name</th>${heads}</tr></thead><tbody>${rows}</tbody></table>`,
       `Attendance record — ${viewedCycle.label}`
     );
+  };
+
+  /* Removing a person edits the team profile they came from — the member list
+     stays the single source of truth — and clears their attendance marks. */
+  const removePerson = (r) => {
+    if (!window.confirm(`Remove ${r.name} from ${r.team}? This deletes them from the team's member list and clears their attendance.`)) return;
+    setProfiles((ps) => ps.map((p) => {
+      if (p.id !== r.profileId) return p;
+      const kept = String(p.members || "").split(/\r?\n/).filter((line) => {
+        const t = line.trim();
+        if (!t) return false;
+        const em = t.match(/[\w.+-]+@[\w.-]+\.\w+/);
+        const key = (em ? em[0] : t.replace(/[\s,;:·|\-–]+$/, "")).toLowerCase();
+        return key !== r.key;
+      });
+      return { ...p, members: kept.join("\n") };
+    }));
+    setAttendance((a) => {
+      const cur = { ...(a || {}) };
+      Object.keys(cur).forEach((sid) => {
+        if (cur[sid] && cur[sid][r.key]) { const row = { ...cur[sid] }; delete row[r.key]; cur[sid] = row; }
+      });
+      return cur;
+    });
   };
 
   /* Reorder programming sessions without retyping them. */
@@ -1386,9 +1413,9 @@ export default function App() {
       <div className="main">
         <div className="topbar">
           <div>
-            <div className="eyebrow">{PHASE_BY_MONTH[CURRENT]}</div>
+            <div className="eyebrow">Cycle {viewedCycle.label}{isPastView ? " · past" : ""}</div>
             <div className="disp" style={{ fontWeight: 700, fontSize: 18, marginTop: 2 }}>
-              {NAV.find((n) => n.id === view).label}
+              {(NAV.find((n) => n.id === view) || NAV[0]).label}
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", justifyContent: "flex-end" }}>
@@ -2203,7 +2230,7 @@ export default function App() {
                               const v = attFor(cur.sid)[r.key];
                               const p = v ? pill[v] : null;
                               return (
-                                <div key={r.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: `1px solid ${T.hairline}` }}>
+                                <div key={r.rowId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: `1px solid ${T.hairline}` }}>
                                   <button onClick={() => cycleAtt(cur.sid, r.key)} title="Click to cycle present → absent → excused"
                                     style={{ flex: "0 0 92px", textAlign: "left" }}>
                                     {p ? <Pill bg={p.bg} fg={p.fg}>{p.lbl}</Pill> : <Pill bg="#EFEAE5" fg={T.muted}>Unmarked</Pill>}
@@ -2212,6 +2239,10 @@ export default function App() {
                                     <div style={{ fontSize: 13, fontWeight: 500 }}>{r.name}</div>
                                     {r.email && <div className="mono" style={{ fontSize: 10.5, color: T.muted }}>{r.email}</div>}
                                   </div>
+                                  <button onClick={() => removePerson(r)} title={`Remove ${r.name} from ${r.team}`}
+                                    style={{ flex: "0 0 auto", color: T.muted, display: "grid", placeItems: "center", padding: 3 }}>
+                                    <Trash2 size={13} />
+                                  </button>
                                 </div>
                               );
                             })}
