@@ -151,7 +151,7 @@ const CURRENT = NOW.toLocaleString("en-US", { month: "short" }); // e.g. "Jun" �
 const ARRAY_SECTIONS = new Set([
   "cycles", "calls", "teams", "classes", "pizza", "sessions",
   "events", "demochecklist", "road", "cohorts", "alumni", "results",
-  "eventChecklists", "teamProfiles", "kb", "phase2Teams",
+  "eventChecklists", "teamProfiles", "kb", "phase2Teams", "attendance",
 ]);
 
 /* cycles: the registry lives in cloud storage (global scope); this is only the first-run seed */
@@ -593,6 +593,7 @@ export default function App() {
   const [draft, setDraft] = useState({ open: false, name: "", topic: "", accent: PALETTE[1].hex });
   const [sessions, setSessions] = useCloudSection("sessions", SESSIONS, cycleId);
   const [psDraft, setPsDraft] = useState({ date: "", title: "", who: "" });
+  const [progTab, setProgTab] = useState("sessions");
   const [teams, setTeams] = useCloudSection("teams", SEED_TEAMS, cycleId);
   const [alumni, setAlumni] = useCloudSection("alumni", SEED_ALUMNI, "global");
   const [selTab, setSelTab] = useState("list");
@@ -958,6 +959,140 @@ export default function App() {
     setRoad((r) => r.map((t, j) => (j === i ? { ...t, status: order[(order.indexOf(t.status) + 1) % 3] } : t)));
   };
 
+  /* ---- attendance: roster × sessions, per cycle ----
+     Sessions need stable ids because rows can be reordered; without them,
+     attendance would follow a position instead of a session. Ids are assigned
+     lazily to any legacy session that predates this feature. */
+  const [attendance, setAttendance] = useCloudSection("attendance", {}, cycleId);
+  const [attSessionId, setAttSessionId] = useState(null);
+  useEffect(() => {
+    if (sessions.some((s) => !s.sid)) {
+      setSessions((ss) => ss.map((s) => (s.sid ? s : { ...s, sid: uid() })));
+    }
+  }, [sessions]);
+
+  /* Roster is derived from the team profiles' member lists — one line per
+     person, "Name  email" or "Name, program, email" — so Pascal maintains
+     people in one place only. */
+  const roster = profiles.flatMap((p) =>
+    String(p.members || "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const em = line.match(/[\w.+-]+@[\w.-]+\.\w+/);
+        const email = em ? em[0] : "";
+        let name = line.replace(email, "").replace(/\s{2,}/g, " ").trim();
+        name = name.replace(/[\s,;:·|\-–]+$/, "").trim();
+        return { key: (email || name).toLowerCase(), name: name || email, email, team: p.name || "Untitled", profileId: p.id };
+      })
+  );
+  const attFor = (sid) => (attendance && attendance[sid]) || {};
+  const setAtt = (sid, key, val) =>
+    setAttendance((a) => {
+      const cur = { ...(a || {}) };
+      const row = { ...(cur[sid] || {}) };
+      if (val) row[key] = val; else delete row[key];
+      cur[sid] = row;
+      return cur;
+    });
+  const cycleAtt = (sid, key) => {
+    const order = [undefined, "present", "absent", "excused"];
+    const cur = attFor(sid)[key];
+    setAtt(sid, key, order[(order.indexOf(cur) + 1) % order.length]);
+  };
+  const markAllPresent = (sid) => {
+    setAttendance((a) => {
+      const cur = { ...(a || {}) };
+      const row = { ...(cur[sid] || {}) };
+      roster.forEach((r) => { row[r.key] = "present"; });
+      cur[sid] = row;
+      return cur;
+    });
+  };
+  const attStats = (sid) => {
+    const row = attFor(sid);
+    const present = roster.filter((r) => row[r.key] === "present").length;
+    const absent = roster.filter((r) => row[r.key] === "absent").length;
+    const excused = roster.filter((r) => row[r.key] === "excused").length;
+    return { present, absent, excused, marked: present + absent + excused, total: roster.length };
+  };
+
+  const PRINT_CSS = `
+  @page { margin: 0.6in; }
+  body { font-family: Georgia,'Times New Roman',serif; color:#2b2b2b; margin:0; }
+  .head { border-bottom:3px solid ${T.burgundy}; padding-bottom:10px; margin-bottom:16px; }
+  h1 { font-size:19px; margin:0; color:${T.burgundy}; }
+  .sub { font-size:12.5px; color:#555; margin-top:3px; }
+  table { border-collapse:collapse; width:100%; }
+  th { background:${T.burgundy}; color:#fff; font-family:Arial,sans-serif; font-size:10px;
+       letter-spacing:.05em; text-transform:uppercase; text-align:left; padding:7px 8px; }
+  td { border-bottom:1px solid #ddd; padding:8px; font-size:12px; vertical-align:middle; }
+  tr:nth-child(even) td { background:#faf8f5; }
+  .team { font-family:Arial,sans-serif; font-size:10.5px; color:#555; }
+  .em { font-family:Arial,sans-serif; font-size:10px; color:#777; }
+  .sig { width:190px; border-bottom:1px solid #999; }
+  .foot { margin-top:14px; font-size:10px; color:#888; font-family:Arial,sans-serif; }
+  .teamhead td { background:#f0eae4 !important; font-family:Arial,sans-serif; font-size:10px;
+       text-transform:uppercase; letter-spacing:.05em; color:#555; font-weight:bold; }
+  .box { display:inline-block; width:12px; height:12px; border:1.2px solid #666; }
+  .grid td, .grid th { text-align:center; }
+  .grid td.n, .grid th.n { text-align:left; }
+  `;
+  const openPrint = (html, title) => {
+    const w = window.open("", "_blank");
+    if (!w) { window.alert("Please allow pop-ups for this site to print."); return; }
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title><style>${PRINT_CSS}</style></head><body>${html}<div class="foot">Gina Cody School of Engineering and Computer Science · Concordia University</div></body></html>`);
+    w.document.close(); w.focus();
+    setTimeout(() => { try { w.print(); } catch (e) {} }, 350);
+  };
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+  /* Blank sign-in sheet for one session — printed, signed, then entered back in. */
+  const printSignIn = (s) => {
+    if (!roster.length) { window.alert("No members found. Add team members in the Teams section first."); return; }
+    const byTeam = {};
+    roster.forEach((r) => { (byTeam[r.team] = byTeam[r.team] || []).push(r); });
+    const rows = Object.keys(byTeam).sort().map((team) => {
+      const head = `<tr class="teamhead"><td colspan="4">${esc(team)}</td></tr>`;
+      const people = byTeam[team].map((r) =>
+        `<tr><td>${esc(r.name)}</td><td class="em">${esc(r.email)}</td><td style="text-align:center"><span class="box"></span></td><td class="sig"></td></tr>`
+      ).join("");
+      return head + people;
+    }).join("");
+    openPrint(
+      `<div class="head"><h1>Attendance sheet</h1>
+       <div class="sub">${esc(s.title)}${s.who ? " — " + esc(s.who) : ""}<br/>
+       ${esc(s.date)}${s.time ? " · " + esc(s.time) : ""}${s.place ? " · " + esc(s.place) : ""} · Cycle ${esc(viewedCycle.label)}</div></div>
+       <table><thead><tr><th>Name</th><th>Email</th><th style="width:60px;text-align:center">Present</th><th style="width:200px">Signature</th></tr></thead>
+       <tbody>${rows}</tbody></table>`,
+      `Attendance — ${s.title}`
+    );
+  };
+
+  /* Full grid: everyone × every session, matching the master contact sheet. */
+  const printAttendanceGrid = () => {
+    if (!roster.length) { window.alert("No members found. Add team members in the Teams section first."); return; }
+    const mark = { present: "P", absent: "A", excused: "E" };
+    const heads = sessions.map((s) => `<th style="font-size:9px">${esc(s.title.length > 22 ? s.title.slice(0, 20) + "…" : s.title)}<br/><span style="font-weight:normal;opacity:.8">${esc(s.date)}</span></th>`).join("");
+    const byTeam = {};
+    roster.forEach((r) => { (byTeam[r.team] = byTeam[r.team] || []).push(r); });
+    const rows = Object.keys(byTeam).sort().map((team) => {
+      const head = `<tr class="teamhead"><td class="n" colspan="${sessions.length + 1}">${esc(team)}</td></tr>`;
+      const people = byTeam[team].map((r) => {
+        const cells = sessions.map((s) => `<td>${mark[attFor(s.sid)[r.key]] || ""}</td>`).join("");
+        return `<tr><td class="n">${esc(r.name)}</td>${cells}</tr>`;
+      }).join("");
+      return head + people;
+    }).join("");
+    openPrint(
+      `<div class="head"><h1>Attendance record</h1>
+       <div class="sub">GCS Student Innovation Fund — Phase 1 · Cycle ${esc(viewedCycle.label)} · P = present · A = absent · E = excused</div></div>
+       <table class="grid"><thead><tr><th class="n">Name</th>${heads}</tr></thead><tbody>${rows}</tbody></table>`,
+      `Attendance record — ${viewedCycle.label}`
+    );
+  };
+
   /* Reorder programming sessions without retyping them. */
   const moveSession = (i, dir) => setSessions((ss) => {
     const j = i + dir;
@@ -973,7 +1108,6 @@ export default function App() {
   /* Print the finalized programming as a "Calendar of Activities" sheet
      matching the Gina Cody template (Date · Time · Place · Activity). */
   const printCalendar = () => {
-    const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
     const rows = sessions.map((s) => {
       const activity = esc(s.title) + (s.who && s.who !== "TBD" ? ` — <span class="who">${esc(s.who)}</span>` : "");
       return `<tr><td class="date">${esc(s.date)}</td><td class="time">${esc(s.time)}</td><td class="place">${esc(s.place)}</td><td>${activity}</td></tr>`;
@@ -1930,13 +2064,27 @@ export default function App() {
                   <div className="h1 disp">Programming · Sep → Mar</div>
                   <div className="sub">The presentation series and monthly check-ins that lead each cohort to Demo Day. Tick a session once it's held.</div>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <span className="mono" style={{ fontSize: 12, color: T.muted }}>{sessions.filter((s) => s.done).length}/{sessions.length} held</span>
-                  <button className="btn ghost" style={{ fontSize: 12, padding: "7px 13px" }} onClick={printCalendar} title="Open a printable Calendar of Activities">
-                    <Download size={14} /> Print calendar
-                  </button>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                  <div className="tabs">
+                    <button className={progTab === "sessions" ? "on" : ""} onClick={() => setProgTab("sessions")}>Sessions</button>
+                    <button className={progTab === "attendance" ? "on" : ""} onClick={() => setProgTab("attendance")}>Attendance</button>
+                  </div>
+                  {progTab === "sessions" ? (
+                    <>
+                      <span className="mono" style={{ fontSize: 12, color: T.muted }}>{sessions.filter((s) => s.done).length}/{sessions.length} held</span>
+                      <button className="btn ghost" style={{ fontSize: 12, padding: "7px 13px" }} onClick={printCalendar} title="Open a printable Calendar of Activities">
+                        <Download size={14} /> Print calendar
+                      </button>
+                    </>
+                  ) : (
+                    <button className="btn ghost" style={{ fontSize: 12, padding: "7px 13px" }} onClick={printAttendanceGrid} title="Print the full attendance record">
+                      <Download size={14} /> Print full record
+                    </button>
+                  )}
                 </div>
               </div>
+
+              {progTab === "sessions" && (<>
               <div className="card" style={{ marginTop: 20 }}>
                 <div>
                   {sessions.map((s, i) => {
@@ -1980,6 +2128,7 @@ export default function App() {
                           className="mini" style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap", borderColor: s.done ? T.ok : T.hairline, color: s.done ? T.ok : T.muted }} title="Mark held">
                           {s.done ? <CheckCircle2 size={14} /> : <Circle size={14} />}{s.done ? "Held" : "Upcoming"}
                         </button>
+                        <button onClick={() => printSignIn(s)} title="Print attendance sheet for this session" style={{ marginTop: 8, color: T.muted, display: "grid", placeItems: "center" }}><Download size={14} /></button>
                         <button onClick={() => setSessions((ss) => ss.filter((_, j) => j !== i))} title="Remove session" style={{ marginTop: 8, color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button>
                       </div>
                     );
@@ -1994,11 +2143,85 @@ export default function App() {
                     style={{ flex: 1, minWidth: 120, padding: "8px 10px", border: `1px solid ${T.hairline}`, borderRadius: 9, fontFamily: "inherit", fontSize: 13, background: T.surface, color: T.ink }} />
                   <button className="btn" onClick={() => {
                     if (!psDraft.title.trim()) return;
-                    setSessions((ss) => [...ss, { date: psDraft.date.trim() || "TBD", title: psDraft.title.trim(), who: psDraft.who.trim() || "TBD", kind: "talk", done: false }]);
+                    setSessions((ss) => [...ss, { sid: uid(), date: psDraft.date.trim() || "TBD", time: "16:00–18:00", place: "EV2.309", title: psDraft.title.trim(), who: psDraft.who.trim() || "TBD", kind: "talk", done: false }]);
                     setPsDraft({ date: "", title: "", who: "" });
                   }}><Plus size={15} /> Add</button>
                 </div>
               </div>
+              </>)}
+
+              {progTab === "attendance" && (
+                roster.length === 0 ? (
+                  <div className="card" style={{ marginTop: 20, color: T.muted, fontSize: 13.5 }}>
+                    No members yet. Attendance is built from the member lists in <button onClick={() => setView("teams")} style={{ color: accent, fontWeight: 600, textDecoration: "underline" }}>Teams</button> — add one person per line (name and email) and they'll appear here.
+                  </div>
+                ) : (() => {
+                  const cur = sessions.find((s) => s.sid === attSessionId) || sessions[0];
+                  if (!cur) return <div className="card" style={{ marginTop: 20, color: T.muted, fontSize: 13.5 }}>Add a session first.</div>;
+                  const st = attStats(cur.sid);
+                  const byTeam = {};
+                  roster.forEach((r) => { (byTeam[r.team] = byTeam[r.team] || []).push(r); });
+                  const pill = { present: { bg: "#E8F0DD", fg: T.ok, lbl: "Present" }, absent: { bg: "#FBE3DC", fg: T.danger, lbl: "Absent" }, excused: { bg: "#FBF1D8", fg: "#9a7b12", lbl: "Excused" } };
+                  return (
+                    <>
+                      <div className="chiprow" style={{ marginTop: 18 }}>
+                        {sessions.map((s) => {
+                          const ss = attStats(s.sid);
+                          return (
+                            <button key={s.sid} title={s.title} className={"chip" + (cur.sid === s.sid ? " on" : "")} onClick={() => setAttSessionId(s.sid)}>
+                              {s.date} · {s.title.length > 20 ? s.title.slice(0, 18) + "…" : s.title}
+                              <span className="mono" style={{ fontSize: 10, marginLeft: 6, opacity: 0.85 }}>{ss.marked ? `${ss.present}/${ss.total}` : "—"}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="card" style={{ marginTop: 14 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
+                          <div>
+                            <div className="disp" style={{ fontWeight: 700, fontSize: 16 }}>{cur.title}</div>
+                            <div style={{ color: T.muted, fontSize: 12.5, marginTop: 2 }}>
+                              {cur.date}{cur.time ? " · " + cur.time : ""}{cur.place ? " · " + cur.place : ""}{cur.who ? " · " + cur.who : ""}
+                            </div>
+                            <div className="mono" style={{ fontSize: 12, marginTop: 6 }}>
+                              <span style={{ color: T.ok }}>{st.present} present</span> · <span style={{ color: T.danger }}>{st.absent} absent</span> · <span style={{ color: "#9a7b12" }}>{st.excused} excused</span> · <span style={{ color: T.muted }}>{st.total - st.marked} unmarked</span>
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <button className="mini" onClick={() => markAllPresent(cur.sid)}>Mark all present</button>
+                            <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={() => printSignIn(cur)}>
+                              <Download size={13} /> Sign-in sheet
+                            </button>
+                          </div>
+                        </div>
+                        <div className="track" style={{ marginBottom: 4 }}><div style={{ width: (st.total ? (st.present / st.total) * 100 : 0) + "%", background: accent }} /></div>
+
+                        {Object.keys(byTeam).sort().map((team) => (
+                          <div key={team} style={{ marginTop: 14 }}>
+                            <div className="eyebrow" style={{ marginBottom: 4 }}>{team}</div>
+                            {byTeam[team].map((r) => {
+                              const v = attFor(cur.sid)[r.key];
+                              const p = v ? pill[v] : null;
+                              return (
+                                <div key={r.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: `1px solid ${T.hairline}` }}>
+                                  <button onClick={() => cycleAtt(cur.sid, r.key)} title="Click to cycle present → absent → excused"
+                                    style={{ flex: "0 0 92px", textAlign: "left" }}>
+                                    {p ? <Pill bg={p.bg} fg={p.fg}>{p.lbl}</Pill> : <Pill bg="#EFEAE5" fg={T.muted}>Unmarked</Pill>}
+                                  </button>
+                                  <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div style={{ fontSize: 13, fontWeight: 500 }}>{r.name}</div>
+                                    {r.email && <div className="mono" style={{ fontSize: 10.5, color: T.muted }}>{r.email}</div>}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  );
+                })()
+              )}
             </>
           )}
 
