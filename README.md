@@ -62,8 +62,38 @@ Done — share the URL with your team. Every future `git push` redeploys automat
 
 ---
 
+---
+
+## How the calls work
+
+Each cycle runs a **Regular** call plus any number of **themed** calls (Cybersecurity, and whatever comes next). Add or rename them under **Calls & promo**; each gets its own topic and colour.
+
+Every shortlisted team belongs to **one specific call**, and the Selection screen keeps them apart:
+
+- **Interview list** groups teams under a coloured band per call, each with its own table and its own counts. Cybersecurity applicants never sit in the same table as Regular ones.
+- **Board** tints every card with its call's colour and tags it, so a mixed board still reads at a glance.
+- The chips above both views filter to one call, and the dashboard's **By call** panel breaks submissions and outcomes down the same way.
+
+Importing an Airtable export maps the call column automatically — a value containing "Cybersecurity" or "Special" lands the team in that call. Re-importing keeps each team's id where the name is unchanged, so Team profiles and Demo Day results stay linked.
+
+Deleting a call never deletes teams: they move to an **Unassigned** group until you put them in another call.
+
+## Tracking what teams owe you
+
+Deliverables live on each team's profile (**Teams → Profiles**) and carry a real due date. Everything else is derived from it, so nothing needs maintaining by hand:
+
+- **Teams → Deliverables** lists everything outstanding across the whole cohort, most urgent first, with a per-team roll-up underneath.
+- Overdue, due today, and due within a week are colour-coded; a deliverable is outstanding until it's marked submitted.
+- The count in the sidebar next to **Teams**, the dashboard's "Needs attention" row, and the dot on each team chip all come from the same figures.
+
+Due dates typed as free text before this existed are kept and shown with a dashed amber border — click one to convert it to a real date.
+
+## Notes
+
+Notes grow with what you type rather than being capped to one line — team notes, meeting minutes, deliverable notes, rehearsal feedback on the Road to Demo Day, payment notes, traction notes, and knowledge base entries.
+
 ## How persistence works
-Each screen (calls, selection, classes, pizza, sessions, calendar, checklist, road-to-demo-day, cohorts, alumni) is saved as a JSON record in the `app_state` table, shared by everyone signed in. Writes are debounced, so inline typing isn't chatty. It's last-write-wins per screen — fine for a small team. When you outgrow it (per-judge scoring, cross-cohort queries), migrate to `supabase/schema.sql`.
+Each screen (calls, selection, teams, classes, pizza, sessions, calendar, checklist, road-to-demo-day, cohorts, alumni, Phase II) is saved as a JSON record in the `app_state` table, shared by everyone signed in. Writes are debounced, so inline typing isn't chatty. It's last-write-wins per screen — fine for a small team. When you outgrow it (per-judge scoring, cross-cohort queries), migrate to `supabase/schema.sql`.
 
 ## Restricting access
 By default any signed-in Google/email user can read and write. To limit it to your team, use the allowlist (or domain rule) noted at the bottom of `supabase/app_state.sql`.
