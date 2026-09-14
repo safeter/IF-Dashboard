@@ -123,4 +123,27 @@ export function profileDeliverableState(profile) {
     .reduce((worst, s) => (s.rank < worst.rank ? s : worst));
 }
 
+/* ============================================================
+   People
+
+   A team profile keeps its members as free text — one person per line,
+   "Name  email" or "Name, program, email" — because that is how the lists
+   arrive. Parsing happens on read, so the attendance roster and the contact
+   directory always agree on who exists without a second place to maintain.
+   ============================================================ */
+const EMAIL_RE = /[\w.+-]+@[\w.-]+\.\w+/;
+
+export function parseMembers(text) {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const em = line.match(EMAIL_RE);
+      const email = em ? em[0] : "";
+      const name = line.replace(email, "").replace(/\s{2,}/g, " ").trim().replace(/[\s,;:\u00b7|\-\u2013]+$/, "").trim();
+      return { name: name || email, email, key: (email || name).toLowerCase() };
+    });
+}
+
 export { ISO_RE };
