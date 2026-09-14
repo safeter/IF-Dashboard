@@ -8,6 +8,7 @@ import { ui, DialogHost, NoteField, DateField, todayISO, fmtDate } from "./lib/u
 import {
   callFor, callGroups, matchCall, legacyCallId, UNASSIGNED,
   deliverableState, isOutstanding, deliverableSummary, profileDeliverableState, SOON_DAYS,
+  parseMembers,
 } from "./lib/model";
 import {
   LayoutGrid, Megaphone, ListChecks, CalendarDays,
@@ -15,7 +16,7 @@ import {
   UploadCloud, RefreshCw, CalendarCheck, Trophy, Pizza,
   CheckCircle2, Circle, Search, Award, Plus, Trash2, Pencil,
   ChevronDown, ChevronUp, ChevronsUp, ChevronsDown, Download, Upload, Settings, AlertTriangle, Users, BookOpen, Copy, Wallet,
-  PackageCheck, Inbox,
+  PackageCheck, Inbox, Mail, Printer,
 } from "lucide-react";
 
 /* ============================================================
@@ -694,7 +695,11 @@ export default function App() {
   const [teams, setTeams] = useCloudSection("teams", SEED_TEAMS, cycleId);
   const [callFilter, setCallFilter] = useState("all");   // Selection: which call's teams to show
   const [teamQuery, setTeamQuery] = useState("");        // Selection: free-text search
-  const [teamsTab, setTeamsTab] = useState("profiles");  // Teams: profiles | deliverables
+  const [teamsTab, setTeamsTab] = useState("profiles");  // Teams: profiles | deliverables | contacts
+  const [profileCallFilter, setProfileCallFilter] = useState("all"); // Teams: which call's teams to show
+  const [archive, setArchive] = useState(null);          // Contacts: past cycles' profiles, loaded on demand
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const [copiedAll, setCopiedAll] = useState(false);
   const [alumni, setAlumni] = useCloudSection("alumni", SEED_ALUMNI, "global");
   const [selTab, setSelTab] = useState("list");
   const [dragId, setDragId] = useState(null);
@@ -982,10 +987,39 @@ export default function App() {
     return () => { alive = false; };
   }, [cycleId]);
 
-  /* ---- team profiles ---- */
-  const activeProfile = profiles.find((p) => p.id === activeProfileId) || profiles[0] || null;
+  /* ---- team profiles ----
+     A profile's call is a reference to a real entry in this cycle's call
+     list, so the Teams screen can be read one call at a time exactly like
+     Selection. Profiles written before calls were tracked carry either the
+     old binary `cohort` flag (read by `callFor`) or nothing at all — for
+     those, the call is inherited from the matching pipeline team, so no
+     stored data has to be rewritten before the screen is right. */
+  const profileCall = (p) => {
+    if (!p) return callFor(null, callList);
+    if (!p.callId && !p.cohort) {
+      const src = teams.find((t) => t.id === p.teamId || (t.name && p.name && t.name === p.name));
+      if (src) return callFor(src, callList);
+    }
+    return callFor(p, callList);
+  };
+  /* Profiles with their call resolved — what every grouping below reads. */
+  const profileRows = useMemo(
+    () => profiles.map((p) => ({ ...p, callId: profileCall(p).id })),
+    [profiles, teams, callList]   // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  const profileGroups = callGroups(profileRows, callList);
+  const shownProfileGroups = profileCallFilter === "all"
+    ? profileGroups
+    : profileGroups.filter((g) => g.call.id === profileCallFilter);
+  const visibleProfiles = shownProfileGroups.flatMap((g) => g.teams);
+  const activeProfile = visibleProfiles.find((p) => p.id === activeProfileId) || visibleProfiles[0] || null;
   const blankProfile = (t) => ({
     id: uid(), teamId: t ? t.id : null, name: t ? t.name : "",
+    callId: t
+      ? callFor(t, callList).id
+      : (profileCallFilter !== "all" && profileCallFilter !== UNASSIGNED
+        ? profileCallFilter
+        : (accentObj ? accentObj.id : "regular")),
     members: "", dept: "", supervisor: "", mentor: "", finance: "pending", notes: "",
     meetings: [], deliverables: [],
   });
@@ -997,6 +1031,9 @@ export default function App() {
     setProfiles((ps) => [...ps, ...missingProfiles.map(blankProfile)]);
   };
   const updProfile = (id, patch) => setProfiles((ps) => ps.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  /* Moving a team to another call drops the legacy flag with it, so the two
+     can never disagree about where the team belongs. */
+  const setProfileCall = (id, callId) => updProfile(id, { callId, cohort: undefined });
   const rmProfile = async (id) => {
     const p = profiles.find((x) => x.id === id);
     if (!p) return;
@@ -1139,17 +1176,9 @@ export default function App() {
      person, "Name  email" or "Name, program, email" — so Pascal maintains
      people in one place only. */
   const roster = profiles.flatMap((p) =>
-    String(p.members || "")
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line, li) => {
-        const em = line.match(/[\w.+-]+@[\w.-]+\.\w+/);
-        const email = em ? em[0] : "";
-        let name = line.replace(email, "").replace(/\s{2,}/g, " ").trim();
-        name = name.replace(/[\s,;:·|\-–]+$/, "").trim();
-        return { rowId: `${p.id}:${li}`, key: (email || name).toLowerCase(), name: name || email, email, team: p.name || "Untitled", profileId: p.id };
-      })
+    parseMembers(p.members).map((m, li) => ({
+      ...m, rowId: `${p.id}:${li}`, team: p.name || "Untitled", profileId: p.id,
+    }))
   );
   const attFor = (sid) => (attendance && attendance[sid]) || {};
   const setAtt = (sid, key, val) =>
@@ -1264,12 +1293,11 @@ export default function App() {
       { title: `Remove ${r.name} from ${r.team}?`, confirmLabel: "Remove", danger: true }))) return;
     setProfiles((ps) => ps.map((p) => {
       if (p.id !== r.profileId) return p;
+      /* Read each line the same way the roster does, so the person removed
+         here is exactly the person shown there. */
       const kept = String(p.members || "").split(/\r?\n/).filter((line) => {
-        const t = line.trim();
-        if (!t) return false;
-        const em = t.match(/[\w.+-]+@[\w.-]+\.\w+/);
-        const key = (em ? em[0] : t.replace(/[\s,;:·|\-–]+$/, "")).toLowerCase();
-        return key !== r.key;
+        const [m] = parseMembers(line);
+        return !!m && m.key !== r.key;
       });
       return { ...p, members: kept.join("\n") };
     }));
@@ -1280,6 +1308,124 @@ export default function App() {
       });
       return cur;
     });
+  };
+
+  /* ---- contact directory ----
+     Everyone named in this cycle's team profiles, and optionally everyone
+     from past cycles too. Past cycles are not in memory, so they are read
+     from storage on demand — together with each cycle's own call list, so a
+     past team is labelled with the call it actually applied to rather than
+     with whatever happens to share its id this year. */
+  const loadArchive = async () => {
+    if (archive || archiveBusy) return;
+    if (!supabase) { await ui.alert("Past cycles live in cloud storage, which isn't configured here."); setArchive([]); return; }
+    setArchiveBusy(true);
+    const past = cycles.filter((c) => c.id !== cycleId);
+    const out = [];
+    let failed = false;
+    for (const c of past) {
+      const [profRes, callRes] = await Promise.all([
+        supabase.from("app_state").select("data").eq("cycle", c.id).eq("section", "teamProfiles").maybeSingle(),
+        supabase.from("app_state").select("data").eq("cycle", c.id).eq("section", "calls").maybeSingle(),
+      ]);
+      if (profRes.error) { failed = true; continue; }
+      const pastCalls = callRes.data && Array.isArray(callRes.data.data) ? callRes.data.data : callList;
+      const rows = profRes.data && Array.isArray(profRes.data.data) ? profRes.data.data : [];
+      rows.forEach((pr) => out.push({ profile: pr, call: callFor(pr, pastCalls), cycle: c }));
+    }
+    setArchive(out);
+    setArchiveBusy(false);
+    if (failed) await ui.alert("Some past cycles couldn't be read. The list shows everything that loaded.");
+  };
+
+  /* The archive is read relative to the cycle being viewed: keeping it across
+     a cycle switch would list the newly-viewed cycle twice, once as current
+     and once as loaded. The call filter goes with it, since call ids are
+     per-cycle. */
+  useEffect(() => {
+    setArchive(null);
+    setProfileCallFilter("all");
+  }, [cycleId]);
+
+  const contactRows = useMemo(() => {
+    const rows = [];
+    profileRows.forEach((p) => parseMembers(p.members).forEach((m, i) => rows.push({
+      ...m, rowId: `now:${p.id}:${i}`, team: p.name || "Untitled team",
+      call: callFor(p, callList), cycleLabel: viewedCycle.label, current: true,
+    })));
+    (archive || []).forEach(({ profile, call, cycle }) => parseMembers(profile.members).forEach((m, i) => rows.push({
+      ...m, rowId: `past:${cycle.id}:${profile.id}:${i}`, team: profile.name || "Untitled team",
+      call, cycleLabel: cycle.label, current: false,
+      /* Usually every loaded cycle is a past one. It is only when a past
+         cycle is being viewed that one of them is the live cycle instead,
+         and saying so beats labelling the current cohort "past". */
+      note: cycle.status === "active" ? "current" : "past",
+    })));
+    return rows.sort((a, b) =>
+      (a.current === b.current ? 0 : a.current ? -1 : 1)
+      || (a.team || "").localeCompare(b.team || "")
+      || (a.name || "").localeCompare(b.name || ""));
+  }, [profileRows, archive, callList, viewedCycle]);
+
+  /* Past cycles keep their own call list, so a past row matches the filter by
+     call name as well as by id — "Cybersecurity 2025" and "Cybersecurity" are
+     separate rows in storage but the same call to whoever is reading. */
+  const callMatches = (call, filterId) => {
+    if (filterId === "all") return true;
+    if (call.id === filterId) return true;
+    const target = callList.find((c) => c.id === filterId);
+    return !!(target && call.name && String(call.name).toLowerCase() === String(target.name).toLowerCase());
+  };
+  /* Filter chips: every configured call, plus Unassigned when somebody's team
+     points at a call this cycle no longer has — otherwise those people would
+     be reachable only from "All calls" and the counts would not add up. */
+  const contactCalls = [
+    ...callList,
+    ...(contactRows.some((r) => r.call.id === UNASSIGNED)
+      ? [contactRows.find((r) => r.call.id === UNASSIGNED).call]
+      : []),
+  ];
+  const visibleContacts = contactRows.filter((r) => callMatches(r.call, profileCallFilter));
+  const contactEmails = [...new Set(visibleContacts.map((r) => r.email).filter(Boolean))];
+
+  const copyEmails = async () => {
+    if (!contactEmails.length) { await ui.alert("No email addresses in this view yet."); return; }
+    const list = contactEmails.join("; ");
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(list);
+      setCopiedAll(true);
+      setTimeout(() => setCopiedAll(false), 1800);
+    } else {
+      await ui.prompt("Copy these addresses", list, { title: `${contactEmails.length} addresses` });
+    }
+  };
+
+  const printContacts = async (rows) => {
+    if (!rows.length) { await ui.alert("No contacts to print."); return; }
+    /* Grouped by team within its cycle: two cycles can hold a team of the
+       same name, and merging them would invent a roster that never existed. */
+    const byTeam = new Map();
+    rows.forEach((r) => {
+      const key = `${r.cycleLabel}\u0000${r.team}`;
+      if (!byTeam.has(key)) byTeam.set(key, []);
+      byTeam.get(key).push(r);
+    });
+    /* Insertion order, not alphabetical: `rows` already arrives current cycle
+       first, then by team, so the sheet reads the way the screen does. */
+    const body = [...byTeam.keys()].map((key) => {
+      const people = byTeam.get(key);
+      const first = people[0];
+      const head = `<tr class="teamhead"><td colspan="3">${esc(first.team)} — ${esc(first.call.name)} call · ${esc(first.cycleLabel)}${first.current ? "" : ` (${esc(first.note)})`}</td></tr>`;
+      return head + people.map((r) =>
+        `<tr><td>${esc(r.name)}</td><td class="em">${esc(r.email || "—")}</td><td class="team">${esc(r.cycleLabel)}</td></tr>`
+      ).join("");
+    }).join("");
+    openPrint(
+      `<div class="head"><h1>Contact list</h1>
+       <div class="sub">GCS Student Innovation Fund · ${rows.length} contact${rows.length === 1 ? "" : "s"}${archive && archive.length ? " · includes other cycles" : ` · cycle ${esc(viewedCycle.label)}`}</div></div>
+       <table><thead><tr><th>Name</th><th>Email</th><th style="width:90px">Cycle</th></tr></thead><tbody>${body}</tbody></table>`,
+      `Contacts — ${viewedCycle.label}`
+    );
   };
 
   /* Removing a session also drops the attendance marked against it, which
@@ -1788,10 +1934,11 @@ export default function App() {
                     onChange={(patch) => updCall(c.id, patch)}
                     onUse={() => setActiveCall(c.id)}
                     onRemove={c.fixed ? null : async () => {
-                      const attached = teams.filter((t) => callFor(t, callList).id === c.id).length;
+                      const attached = teams.filter((t) => callFor(t, callList).id === c.id).length
+                        + profileRows.filter((p) => p.callId === c.id).length;
                       const ok = await ui.confirm(
                         attached
-                          ? `${attached} team${attached === 1 ? "" : "s"} applied to this call. They are kept, but move to an “Unassigned” group in Selection until you put them in another call.`
+                          ? `${attached} team${attached === 1 ? "" : "s"} sit under this call. They are kept, but move to an “Unassigned” group in Selection and Teams until you put them in another call.`
                           : "Class visits advertised under this call lose their tag.",
                         { title: `Remove the ${c.name} call?`, confirmLabel: "Remove", danger: true }
                       );
@@ -1799,6 +1946,7 @@ export default function App() {
                       setCallList((cs) => cs.filter((x) => x.id !== c.id));
                       if (activeCall === c.id) setActiveCall("regular");
                       if (callFilter === c.id) setCallFilter("all");
+                      if (profileCallFilter === c.id) setProfileCallFilter("all");
                     }} />
                 ))}
                 <AddCallCard draft={draft} setDraft={setDraft} palette={PALETTE}
@@ -2136,6 +2284,9 @@ export default function App() {
                         </span>
                       )}
                     </button>
+                    <button className={teamsTab === "contacts" ? "on" : ""} onClick={() => setTeamsTab("contacts")}>
+                      Contacts
+                    </button>
                   </div>
                   {teamsTab === "profiles" && (
                     <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }}
@@ -2146,7 +2297,95 @@ export default function App() {
                 </div>
               </div>
 
-              {teamsTab === "deliverables" ? (
+              {teamsTab === "contacts" ? (
+                <>
+                  {/* One directory of every person on file, so a mailing list
+                      never has to be rebuilt team by team. Past cycles are off
+                      by default — they are a separate read from storage — and
+                      are dimmed and marked when switched on. */}
+                  <div className="chiprow" style={{ marginTop: 18 }}>
+                    <button className={"chip chipx" + (profileCallFilter === "all" ? " on" : "")} onClick={() => setProfileCallFilter("all")}>
+                      <span className="lbl">All calls</span><span className="n">{contactRows.length}</span>
+                    </button>
+                    {contactCalls.map((c) => (
+                      <button key={c.id} title={c.topic}
+                        className={"chip chipx" + (profileCallFilter === c.id ? " on" : "")}
+                        style={profileCallFilter === c.id
+                          ? { background: c.accent, borderColor: c.accent, color: "#fff" }
+                          : { borderColor: c.accent, color: c.accent }}
+                        onClick={() => setProfileCallFilter(c.id)}>
+                        <span className="lbl">{c.name}{c.topic && c.id !== UNASSIGNED ? ` · ${c.topic}` : ""}</span>
+                        <span className="n">{contactRows.filter((r) => callMatches(r.call, c.id)).length}</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+                    <button className="mini" onClick={copyEmails} title="Copy every address in this view, ready to paste into a mail client">
+                      <Copy size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
+                      {copiedAll ? "Copied ✓" : `Copy ${contactEmails.length} email${contactEmails.length === 1 ? "" : "s"}`}
+                    </button>
+                    <a className="mini" style={{ textDecoration: "none", display: "inline-flex", alignItems: "center" }}
+                      href={`mailto:?bcc=${encodeURIComponent(contactEmails.join(","))}`}
+                      title="Open your mail app with everyone in BCC, so nobody sees anyone else's address">
+                      <Mail size={11} style={{ verticalAlign: -1, marginRight: 4 }} /> Email everyone (BCC)
+                    </a>
+                    <button className="mini" onClick={() => printContacts(visibleContacts)}>
+                      <Printer size={11} style={{ verticalAlign: -1, marginRight: 4 }} /> Print
+                    </button>
+                    {archive === null ? (
+                      <button className="mini" onClick={loadArchive} disabled={archiveBusy}
+                        title="Also read the team profiles stored for every past cycle">
+                        {archiveBusy ? "Loading past cycles…" : "+ Include past cycles"}
+                      </button>
+                    ) : (
+                      <button className="mini on" onClick={() => setArchive(null)} title="Show this cycle only">
+                        <Check size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
+                        Past cycles shown{archive.length ? "" : " · none found"}
+                      </button>
+                    )}
+                    <span className="mono" style={{ fontSize: 11.5, color: T.muted, marginLeft: "auto" }}>
+                      {visibleContacts.length} contact{visibleContacts.length === 1 ? "" : "s"}
+                    </span>
+                  </div>
+
+                  {visibleContacts.length === 0 ? (
+                    <div className="card" style={{ marginTop: 16, color: T.muted, fontSize: 13.5 }}>
+                      No contacts in this view. People come from the Members field on each team profile — one per line, name and email.
+                    </div>
+                  ) : (
+                    <div className="card" style={{ marginTop: 14 }}>
+                      <div style={{ overflowX: "auto" }}>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th scope="col">Name</th><th scope="col">Email</th>
+                              <th scope="col">Team</th><th scope="col">Call</th><th scope="col">Cycle</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {visibleContacts.map((r) => (
+                              <tr key={r.rowId} style={r.current ? undefined : { opacity: 0.62 }}>
+                                <td style={{ minWidth: 150, fontWeight: 600 }}>{r.name}</td>
+                                <td style={{ minWidth: 190 }}>
+                                  {r.email
+                                    ? <a className="mono" href={`mailto:${r.email}`} style={{ fontSize: 11.5, color: T.info }}>{r.email}</a>
+                                    : <span style={{ color: T.muted, fontSize: 12 }}>no email on file</span>}
+                                </td>
+                                <td style={{ fontSize: 12.5 }}>{r.team}</td>
+                                <td><Pill bg={T.surface} fg={r.call.accent}>{r.call.name}</Pill></td>
+                                <td className="mono" style={{ fontSize: 11, color: T.muted, whiteSpace: "nowrap" }}>
+                                  {r.cycleLabel}{r.current ? "" : ` · ${r.note}`}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : teamsTab === "deliverables" ? (
                 <>
                   {/* What are we waiting on? One list, worst first, so nothing
                       has to be hunted for team by team. */}
@@ -2182,7 +2421,7 @@ export default function App() {
                             <Check size={11} style={{ verticalAlign: -1, marginRight: 3 }} />Mark submitted
                           </button>
                           <button className="mini" title="Open this team's profile"
-                            onClick={() => { setActiveProfileId(d.profileId); setTeamsTab("profiles"); }}>Open team</button>
+                            onClick={() => { setActiveProfileId(d.profileId); setProfileCallFilter("all"); setTeamsTab("profiles"); }}>Open team</button>
                         </div>
                       </div>
                     ))}
@@ -2209,7 +2448,7 @@ export default function App() {
                                     ? <Pill bg={worst.bg} fg={worst.fg}>{worst.label}</Pill>
                                     : <Pill bg={T.okTint} fg={T.ok}><Check size={12} /> All in</Pill>}</td>
                                   <td>
-                                    <button className="mini" onClick={() => { setActiveProfileId(p.id); setTeamsTab("profiles"); }}>Open</button>
+                                    <button className="mini" onClick={() => { setActiveProfileId(p.id); setProfileCallFilter("all"); setTeamsTab("profiles"); }}>Open</button>
                                   </td>
                                 </tr>
                               );
@@ -2237,29 +2476,81 @@ export default function App() {
                     </div>
                   ) : (
                     <>
+                      {/* Teams are read one call at a time, the same way the
+                          Selection pipeline is, so a themed call's teams never
+                          sit in an undifferentiated list with the Regular ones. */}
+                      <div className="chiprow" style={{ marginTop: 18 }}>
+                        <button className={"chip chipx" + (profileCallFilter === "all" ? " on" : "")} onClick={() => setProfileCallFilter("all")}>
+                          <span className="lbl">All calls</span><span className="n">{profiles.length}</span>
+                        </button>
+                        {profileGroups.map(({ call, teams: ps }) => (
+                          <button key={call.id} title={call.topic}
+                            className={"chip chipx" + (profileCallFilter === call.id ? " on" : "")}
+                            style={profileCallFilter === call.id
+                              ? { background: call.accent, borderColor: call.accent, color: "#fff" }
+                              : { borderColor: call.accent, color: call.accent }}
+                            onClick={() => setProfileCallFilter(call.id)}>
+                            <span className="lbl">{call.name}{call.topic && call.id !== UNASSIGNED ? ` · ${call.topic}` : ""}</span>
+                            <span className="n">{ps.length}</span>
+                          </button>
+                        ))}
+                      </div>
+
                       {/* A team chip carries its worst outstanding deliverable, so
                           the teams to chase are visible without opening each one. */}
-                      <div className="chiprow" style={{ marginTop: 18 }}>
-                        {[...profiles].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => {
-                          const worst = profileDeliverableState(p);
-                          const on = activeProfile && activeProfile.id === p.id;
-                          return (
-                            <button key={p.id} title={worst ? `${p.name || "Untitled"} — ${worst.label}` : p.name || "Untitled"}
-                              className={"chip" + (on ? " on" : "")} onClick={() => setActiveProfileId(p.id)}
-                              style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
-                              {worst && <span style={{ width: 7, height: 7, borderRadius: 999, background: worst.fg, flex: "0 0 7px" }} />}
-                              {p.name || "Untitled"}
-                            </button>
-                          );
-                        })}
-                      </div>
+                      {visibleProfiles.length === 0 ? (
+                        <div className="card" style={{ marginTop: 14, color: T.muted, fontSize: 13.5 }}>
+                          No teams in this call yet. Open a team from another call and change its call, or add one.
+                        </div>
+                      ) : shownProfileGroups.map(({ call, teams: groupProfiles }) => {
+                        if (!groupProfiles.length) return null;
+                        return (
+                          <div key={call.id} style={{ marginTop: 14 }}>
+                            <div className="eyebrow" style={{ marginBottom: 7, color: call.accent }}>
+                              {call.id === UNASSIGNED ? "Unassigned" : `${call.name} call`} · {groupProfiles.length} team{groupProfiles.length === 1 ? "" : "s"}
+                            </div>
+                            <div className="chiprow">
+                              {[...groupProfiles].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => {
+                                const worst = profileDeliverableState(p);
+                                const on = activeProfile && activeProfile.id === p.id;
+                                return (
+                                  <button key={p.id} title={worst ? `${p.name || "Untitled"} — ${worst.label}` : p.name || "Untitled"}
+                                    className={"chip" + (on ? " on" : "")} onClick={() => setActiveProfileId(p.id)}
+                                    style={on
+                                      ? { display: "inline-flex", alignItems: "center", gap: 7, background: call.accent, borderColor: call.accent }
+                                      : { display: "inline-flex", alignItems: "center", gap: 7, borderLeft: `3px solid ${call.accent}` }}>
+                                    {worst && <span style={{ width: 7, height: 7, borderRadius: 999, background: on ? "#fff" : worst.fg, flex: "0 0 7px" }} />}
+                                    {p.name || "Untitled"}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
 
                       {activeProfile && (
                         <div className="grid resp" style={{ gridTemplateColumns: "1fr 1.3fr", marginTop: 14 }}>
                           <div className="card">
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
                               <div className="eyebrow">Profile</div>
-                              <IconBtn title="Remove profile" onClick={() => rmProfile(activeProfile.id)}><Trash2 size={14} /></IconBtn>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                                {/* Which call this team came from — the same list
+                                    Selection uses, so the two screens agree. */}
+                                <select
+                                  value={profileCall(activeProfile).id}
+                                  aria-label={`Call for ${activeProfile.name || "this team"}`}
+                                  title="Which call this team applied to — changing it moves the team to that group"
+                                  onChange={(e) => setProfileCall(activeProfile.id, e.target.value)}
+                                  style={{ fontFamily: "IBM Plex Mono", fontSize: 11.5, padding: "5px 7px", borderRadius: 8, background: T.surface, maxWidth: 210,
+                                           border: `1px solid ${profileCall(activeProfile).accent}`, color: profileCall(activeProfile).accent, fontWeight: 600 }}>
+                                  {callList.map((c) => (
+                                    <option key={c.id} value={c.id}>{c.name}{c.topic ? ` — ${c.topic}` : ""}</option>
+                                  ))}
+                                  {profileCall(activeProfile).id === UNASSIGNED && <option value={UNASSIGNED}>Unassigned</option>}
+                                </select>
+                                <IconBtn title="Remove profile" onClick={() => rmProfile(activeProfile.id)}><Trash2 size={14} /></IconBtn>
+                              </div>
                             </div>
                             <EInput value={activeProfile.name} onChange={(v) => updProfile(activeProfile.id, { name: v })} placeholder="Team name" />
                             <div className="eyebrow" style={{ margin: "12px 0 3px" }}>Members</div>
