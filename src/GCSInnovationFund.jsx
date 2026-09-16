@@ -237,6 +237,15 @@ const STAGES = [
 
 const JUDGES = 6;            // panel size
 const MAX_SCORE = JUDGES * 5; // each judge scores /5 → 30 ceiling
+/* The published Phase II maximum. Amounts above it are flagged, never
+   rewritten: clamping every keystroke made the field impossible to edit —
+   appending a digit to 25000 snapped it to 50000 and it stuck there. */
+const MAX_AWARD = 50000;
+/** Digits only, no silent rounding: "$12,500" typed into a money field is 12500. */
+const money = (v, digits = 7) => {
+  const n = String(v ?? "").replace(/\D/g, "").slice(0, digits);
+  return n === "" ? "" : Number(n);
+};
 const SEED_TEAMS = [
   { id:1, name:"NeuroWeave", blurb:"Adaptive EEG headband for focus training", callId:"regular", flaggedBy:["Judges","Program team"], score:26, stage:"scheduled", agreed:"yes", date:"Jul 4, 10:00", outcome:null },
   { id:2, name:"HydroSense", blurb:"Low-cost lead sensors for municipal water", callId:"regular", flaggedBy:["Judges"], score:22, stage:"responded", agreed:"yes", date:"", outcome:null },
@@ -2847,7 +2856,9 @@ export default function App() {
                             <td style={{ minWidth: 96 }}>
                               <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
                                 <span className="mono" style={{ color: T.muted, fontSize: 12 }}>$</span>
-                                <EInput value={r.amount} onChange={(v) => { const n = v.replace(/\D/g, "").slice(0, 5); updResult(r.id, { amount: n === "" ? "" : Math.min(Number(n), 50000) }); }} placeholder="0" mono w="70px" />
+                                <EInput value={r.amount} onChange={(v) => updResult(r.id, { amount: money(v) })} placeholder="0" mono w="70px"
+                                  ariaLabel={`Phase II amount for ${r.team || "this team"}`}
+                                  title={Number(r.amount) > MAX_AWARD ? `Above the $${MAX_AWARD.toLocaleString()}/yr maximum` : undefined} />
                               </div>
                             </td>
                             <td style={{ minWidth: 200 }}><NoteField value={r.note} onChange={(v) => updResult(r.id, { note: v })} placeholder="Traction note" minRows={1} style={{ fontSize: 12.5 }} /></td>
@@ -3290,6 +3301,7 @@ export default function App() {
 
                   {activeP2 && (() => {
                     const paid = p2Paid(activeP2);
+                    const payN = (activeP2.payments || []).length;
                     const awarded = Number(activeP2.awarded) || 0;
                     const pct = awarded ? Math.min(Math.round((paid / awarded) * 100), 100) : 0;
                     const remaining = Math.max(awarded - paid, 0);
@@ -3315,7 +3327,12 @@ export default function App() {
                           <div className="eyebrow" style={{ margin: "12px 0 3px" }}>Award ($/yr)</div>
                           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                             <span className="mono" style={{ color: T.muted }}>$</span>
-                            <EInput value={activeP2.awarded} onChange={(v) => { const n = v.replace(/\D/g, "").slice(0, 6); updP2(activeP2.id, { awarded: n === "" ? "" : Math.min(Number(n), 50000) }); }} placeholder="0" mono w="90px" />
+                            <EInput value={activeP2.awarded} onChange={(v) => updP2(activeP2.id, { awarded: money(v) })} placeholder="0" mono w="90px" ariaLabel="Award amount" />
+                            {awarded > MAX_AWARD && (
+                              <span style={{ fontSize: 11.5, color: T.warnInk }}>
+                                above the ${MAX_AWARD.toLocaleString()}/yr maximum
+                              </span>
+                            )}
                           </div>
                           <div style={{ marginTop: 14 }}>
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -3325,7 +3342,15 @@ export default function App() {
                               </span>
                             </div>
                             <div className="track" style={{ marginTop: 7 }}><div style={{ width: pct + "%", background: remaining === 0 && awarded > 0 ? T.ok : accent }} /></div>
-                            {awarded > 0 && <div style={{ color: T.muted, fontSize: 11.5, marginTop: 5 }}>{remaining > 0 ? `$${remaining.toLocaleString()} remaining` : "Fully disbursed"}</div>}
+                            {/* This figure is the payment ledger's total, never typed
+                                directly — saying so beats leaving someone clicking
+                                at a number that will not take an edit. */}
+                            <div style={{ color: T.muted, fontSize: 11.5, marginTop: 5 }}>
+                              {awarded > 0 && (remaining > 0 ? `$${remaining.toLocaleString()} remaining · ` : "Fully disbursed · ")}
+                              {payN
+                                ? `total of ${payN} payment${payN === 1 ? "" : "s"} — change it in the ledger`
+                                : "no payments recorded yet — add one in the ledger to move this"}
+                            </div>
                           </div>
                           <div className="eyebrow" style={{ margin: "12px 0 3px" }}>Note</div>
                           <NoteField value={activeP2.note} onChange={(v) => updP2(activeP2.id, { note: v })}
@@ -3345,7 +3370,7 @@ export default function App() {
                                   <DateField value={pay.date} onChange={(v) => updP2Sub(activeP2.id, "payments", pay.id, { date: v })} w="126px" title="Payment date" />
                                 </div>
                                 <span className="mono" style={{ color: T.muted, fontSize: 12, paddingTop: 7 }}>$</span>
-                                <EInput value={pay.amount} onChange={(v) => { const val = v.replace(/\D/g, "").slice(0, 6); updP2Sub(activeP2.id, "payments", pay.id, { amount: val === "" ? "" : Number(val) }); }} placeholder="0" mono w="70px" ariaLabel="Payment amount" />
+                                <EInput value={pay.amount} onChange={(v) => updP2Sub(activeP2.id, "payments", pay.id, { amount: money(v) })} placeholder="0" mono w="70px" ariaLabel="Payment amount" />
                                 <NoteField value={pay.note} onChange={(v) => updP2Sub(activeP2.id, "payments", pay.id, { note: v })} placeholder="Tranche / milestone — and any conditions attached" minRows={1} />
                                 <IconBtn title="Remove payment" style={{ marginTop: 4 }} onClick={() => rmP2Sub(activeP2.id, "payments", pay.id)}><Trash2 size={13} /></IconBtn>
                               </div>
