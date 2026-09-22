@@ -1732,8 +1732,8 @@ export default function App() {
     { id: "dashboard", label: "Dashboard", Icon: LayoutGrid },
     { id: "calls", label: "Calls & promo", Icon: Megaphone },
     { id: "selection", label: "Selection", Icon: ListChecks },
-    { id: "teams", label: "Teams", Icon: Users, badge: deliverables.outstanding, badgeTone: deliverables.overdue ? T.danger : T.warnInk },
-    { id: "phase2", label: "Phase II", Icon: Wallet },
+    { id: "teams", label: "Phase I teams", Icon: Users, badge: deliverables.outstanding, badgeTone: deliverables.overdue ? T.danger : T.warnInk },
+    { id: "phase2", label: "Phase II teams", Icon: Wallet },
     { id: "planning", label: "Planning", Icon: CalendarCheck },
     { id: "programming", label: "Programming", Icon: CalendarDays },
     { id: "knowledge", label: "Knowledge", Icon: BookOpen },
@@ -2292,8 +2292,8 @@ export default function App() {
             <>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
                 <div>
-                  <div className="h1 disp">Teams · cycle {viewedCycle.label}</div>
-                  <div className="sub">The cohort's home for the Seed year — members, onboarding status, monthly check-ins, and deliverables.</div>
+                  <div className="h1 disp">Phase I teams · cycle {viewedCycle.label}</div>
+                  <div className="sub">The Seed-year cohort — members, onboarding status, monthly check-ins, and deliverables. No funds are disbursed in Phase I; award money is tracked under Phase II teams.</div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                   <div className="tabs">
@@ -2982,7 +2982,7 @@ export default function App() {
               {progTab === "attendance" && (
                 roster.length === 0 ? (
                   <div className="card" style={{ marginTop: 20, color: T.muted, fontSize: 13.5 }}>
-                    No members yet. Attendance is built from the member lists in <button onClick={() => setView("teams")} style={{ color: accent, fontWeight: 600, textDecoration: "underline" }}>Teams</button> — add one person per line (name and email) and they'll appear here.
+                    No members yet. Attendance is built from the member lists in <button onClick={() => setView("teams")} style={{ color: accent, fontWeight: 600, textDecoration: "underline" }}>Phase I teams</button> — add one person per line (name and email) and they'll appear here.
                   </div>
                 ) : (() => {
                   const cur = sessions.find((s) => s.sid === attSessionId) || sessions[0];
@@ -3266,8 +3266,8 @@ export default function App() {
             <>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
                 <div>
-                  <div className="h1 disp">Phase II · funded teams</div>
-                  <div className="sub">The Maturation-year teams — track disbursement of their award and the support meetings held with each.</div>
+                  <div className="h1 disp">Phase II teams · funded</div>
+                  <div className="sub">The Maturation-year teams — the only place money is tracked. Record each award, its disbursement, and the support meetings held.</div>
                 </div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   {missingP2.length > 0 && (
