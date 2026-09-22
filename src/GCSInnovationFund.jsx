@@ -1047,6 +1047,7 @@ export default function App() {
         ? profileCallFilter
         : (accentObj ? accentObj.id : "regular")),
     members: "", dept: "", supervisor: "", mentor: "", finance: "pending", notes: "",
+    budget: "", spent: "",
     meetings: [], deliverables: [],
   });
   const missingProfiles = teams.filter(
@@ -1414,6 +1415,19 @@ export default function App() {
     const orphan = contactRows.find((r) => r.call.id === UNASSIGNED);
     return orphan ? [...profileGroups, { call: orphan.call, teams: [] }] : profileGroups;
   })();
+  /* Seed-year money. Phase I teams are given a budget through their Financial
+     Services account; until now the screen recorded only whether that account
+     was open, not what was in it. Profiles saved before this have neither
+     field, so both read as zero. */
+  const budgetOf = (p) => Number(p.budget) || 0;
+  const spentOf = (p) => Number(p.spent) || 0;
+  const cohortBudget = visibleProfiles.reduce(
+    (a, p) => {
+      const b = budgetOf(p), sp = spentOf(p);
+      return { allocated: a.allocated + b, spent: a.spent + sp, withBudget: a.withBudget + (b > 0 ? 1 : 0), over: a.over + (b > 0 && sp > b ? 1 : 0) };
+    },
+    { allocated: 0, spent: 0, withBudget: 0, over: 0 }
+  );
   const filteredCallName = (() => {
     if (profileCallFilter === "all") return "";
     const hit = teamFilterGroups.find((g) => g.call.id === profileCallFilter);
@@ -2310,7 +2324,7 @@ export default function App() {
                   this block now depends on which tab is open. */}
               <div>
                 <div className="h1 disp">Phase I teams · cycle {viewedCycle.label}</div>
-                <div className="sub">The Seed-year cohort — members, onboarding status, monthly check-ins, and deliverables. No funds are disbursed in Phase I; award money is tracked under Phase II teams.</div>
+                <div className="sub">The Seed-year cohort — members, onboarding, check-ins, deliverables, and each team's seed budget. The larger Maturation awards live under Phase II teams.</div>
               </div>
 
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap",
@@ -2526,6 +2540,24 @@ export default function App() {
                     </div>
                   ) : (
                     <>
+                      {/* What the cohort in view has been given, and what has
+                          gone out. Scoped by the call filter like everything
+                          else on this screen. Hidden until a budget exists, so
+                          it never sits there as three zeroes. */}
+                      {cohortBudget.allocated > 0 && (
+                        <div className="grid resp" style={{ gridTemplateColumns: "repeat(3,1fr)", marginTop: 16, gap: 12 }}>
+                          <Stat n={`$${cohortBudget.allocated.toLocaleString()}`}
+                            l={`Allocated across ${cohortBudget.withBudget} team${cohortBudget.withBudget === 1 ? "" : "s"}${profileCallFilter !== "all" ? ` in ${filteredCallName}` : ""}`}
+                            accent={accent} />
+                          <Stat n={`$${cohortBudget.spent.toLocaleString()}`} l="Spent so far" accent={accent} />
+                          <Stat n={`$${Math.max(cohortBudget.allocated - cohortBudget.spent, 0).toLocaleString()}`}
+                            l={cohortBudget.over > 0
+                              ? `Unspent · ${cohortBudget.over} team${cohortBudget.over === 1 ? "" : "s"} over budget`
+                              : "Unspent"}
+                            accent={cohortBudget.over > 0 ? T.danger : accent} />
+                        </div>
+                      )}
+
                       {/* A team chip carries its worst outstanding deliverable, so
                           the teams to chase are visible without opening each one. */}
                       {visibleProfiles.length === 0 ? (
@@ -2599,6 +2631,56 @@ export default function App() {
                                 </button>
                               </div>
                             </div>
+
+                            {/* Seed-year budget. Phase II tracks an award paid out
+                                in tranches; Phase I is a single sum drawn down
+                                against the team's Financial Services account, so
+                                two figures say everything: what they were given
+                                and what has gone out. */}
+                            {(() => {
+                              const budget = budgetOf(activeProfile);
+                              const spent = spentOf(activeProfile);
+                              const over = Math.max(spent - budget, 0);
+                              const left = Math.max(budget - spent, 0);
+                              const pct = budget ? Math.min(Math.round((spent / budget) * 100), 100) : 0;
+                              return (
+                                <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${T.hairline}` }}>
+                                  <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+                                    <div>
+                                      <div className="eyebrow" style={{ marginBottom: 3 }}>Budget</div>
+                                      <span className="moneyfield">
+                                        <span className="cur">$</span>
+                                        <EInput value={activeProfile.budget} mono w="82px" placeholder="0" ariaLabel="Seed-year budget"
+                                          onChange={(v) => updProfile(activeProfile.id, { budget: money(v) })} />
+                                      </span>
+                                    </div>
+                                    <div>
+                                      <div className="eyebrow" style={{ marginBottom: 3 }}>Spent so far</div>
+                                      <span className={"moneyfield" + (budget > 0 && spent === 0 ? " empty" : "")}
+                                        title={budget > 0 && spent === 0 ? "Nothing recorded as spent yet" : undefined}>
+                                        <span className="cur">$</span>
+                                        <EInput value={activeProfile.spent} mono w="82px" placeholder="0" ariaLabel="Spent so far"
+                                          onChange={(v) => updProfile(activeProfile.id, { spent: money(v) })} />
+                                      </span>
+                                    </div>
+                                  </div>
+                                  {budget > 0 && (
+                                    <>
+                                      <div className="track" style={{ marginTop: 11 }}>
+                                        <div style={{ width: pct + "%", background: over > 0 ? T.danger : left === 0 ? T.ok : accent }} />
+                                      </div>
+                                      <div style={{ fontSize: 11.5, marginTop: 5, color: over > 0 ? T.danger : T.muted }}>
+                                        {over > 0
+                                          ? `$${over.toLocaleString()} over budget`
+                                          : left > 0
+                                            ? `$${left.toLocaleString()} of $${budget.toLocaleString()} remaining`
+                                            : "Fully spent"}
+                                      </div>
+                                    </>
+                                  )}
+                                </div>
+                              );
+                            })()}
                             <div className="eyebrow" style={{ margin: "14px 0 3px" }}>Notes</div>
                             <NoteField value={activeProfile.notes} onChange={(v) => updProfile(activeProfile.id, { notes: v })}
                               placeholder="Anything worth remembering — context, risks, decisions, who said what. Grows as you type." minRows={6} />
@@ -3275,7 +3357,7 @@ export default function App() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
                 <div>
                   <div className="h1 disp">Phase II teams · funded</div>
-                  <div className="sub">The Maturation-year teams — the only place money is tracked. Record each award, its disbursement, and the support meetings held.</div>
+                  <div className="sub">The Maturation-year teams — up to $50,000 a year, paid in tranches. Record each award, its disbursement, and the support meetings held.</div>
                 </div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   {missingP2.length > 0 && (
