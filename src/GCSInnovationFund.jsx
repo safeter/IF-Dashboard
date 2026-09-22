@@ -1034,6 +1034,10 @@ export default function App() {
     ? profileGroups
     : profileGroups.filter((g) => g.call.id === profileCallFilter);
   const visibleProfiles = shownProfileGroups.flatMap((g) => g.teams);
+  /* The Deliverables tab answers the call filter like its siblings. The
+     cohort-wide `deliverables` above still drives the sidebar badge and the
+     dashboard, so those never change when someone narrows the view here. */
+  const shownDeliverables = useMemo(() => deliverableSummary(visibleProfiles), [visibleProfiles]);
   const activeProfile = visibleProfiles.find((p) => p.id === activeProfileId) || visibleProfiles[0] || null;
   const blankProfile = (t) => ({
     id: uid(), teamId: t ? t.id : null, name: t ? t.name : "",
@@ -1401,12 +1405,20 @@ export default function App() {
   /* Filter chips: every configured call, plus Unassigned when somebody's team
      points at a call this cycle no longer has — otherwise those people would
      be reachable only from "All calls" and the counts would not add up. */
-  const contactCalls = [
-    ...callList,
-    ...(contactRows.some((r) => r.call.id === UNASSIGNED)
-      ? [contactRows.find((r) => r.call.id === UNASSIGNED).call]
-      : []),
-  ];
+  /* Chips for the filter the three tabs share. Counts are teams, since that
+     is what every tab is a view of. The Unassigned chip appears when anything
+     on screen needs it — a profile whose call was deleted, or a contact read
+     back from an archived cycle. */
+  const teamFilterGroups = (() => {
+    if (profileGroups.some((g) => g.call.id === UNASSIGNED)) return profileGroups;
+    const orphan = contactRows.find((r) => r.call.id === UNASSIGNED);
+    return orphan ? [...profileGroups, { call: orphan.call, teams: [] }] : profileGroups;
+  })();
+  const filteredCallName = (() => {
+    if (profileCallFilter === "all") return "";
+    const hit = teamFilterGroups.find((g) => g.call.id === profileCallFilter);
+    return hit ? (hit.call.id === UNASSIGNED ? "Unassigned" : hit.call.name) : "";
+  })();
   const visibleContacts = contactRows.filter((r) => callMatches(r.call, profileCallFilter));
   const contactEmails = [...new Set(visibleContacts.map((r) => r.email).filter(Boolean))];
 
@@ -1732,8 +1744,8 @@ export default function App() {
     { id: "dashboard", label: "Dashboard", Icon: LayoutGrid },
     { id: "calls", label: "Calls & promo", Icon: Megaphone },
     { id: "selection", label: "Selection", Icon: ListChecks },
-    { id: "teams", label: "Teams", Icon: Users, badge: deliverables.outstanding, badgeTone: deliverables.overdue ? T.danger : T.warnInk },
-    { id: "phase2", label: "Phase II", Icon: Wallet },
+    { id: "teams", label: "Phase I teams", Icon: Users, badge: deliverables.outstanding, badgeTone: deliverables.overdue ? T.danger : T.warnInk },
+    { id: "phase2", label: "Phase II teams", Icon: Wallet },
     { id: "planning", label: "Planning", Icon: CalendarCheck },
     { id: "programming", label: "Programming", Icon: CalendarDays },
     { id: "knowledge", label: "Knowledge", Icon: BookOpen },
@@ -2290,33 +2302,57 @@ export default function App() {
 
           {view === "teams" && (
             <>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
-                <div>
-                  <div className="h1 disp">Teams · cycle {viewedCycle.label}</div>
-                  <div className="sub">The cohort's home for the Seed year — members, onboarding status, monthly check-ins, and deliverables.</div>
+              {/* The heading, the tabs and the call filter are one fixed frame.
+                  They previously shared a wrapping flex row with the "Add team"
+                  button, which exists only on Profiles — so switching tab
+                  changed the row's width, and the tab bar jumped between the
+                  end of the heading line and its own line below. Nothing in
+                  this block now depends on which tab is open. */}
+              <div>
+                <div className="h1 disp">Phase I teams · cycle {viewedCycle.label}</div>
+                <div className="sub">The Seed-year cohort — members, onboarding status, monthly check-ins, and deliverables. No funds are disbursed in Phase I; award money is tracked under Phase II teams.</div>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap",
+                            marginTop: 18, paddingBottom: 14, borderBottom: `1px solid ${T.hairline}` }}>
+                <div className="tabs">
+                  <button className={teamsTab === "profiles" ? "on" : ""} onClick={() => setTeamsTab("profiles")}>Profiles</button>
+                  <button className={teamsTab === "deliverables" ? "on" : ""} onClick={() => setTeamsTab("deliverables")}>
+                    Deliverables
+                    {deliverables.outstanding > 0 && (
+                      <span className="badge" style={{ marginLeft: 6, background: deliverables.overdue ? T.danger : T.warnInk }}>
+                        {deliverables.outstanding}
+                      </span>
+                    )}
+                  </button>
+                  <button className={teamsTab === "contacts" ? "on" : ""} onClick={() => setTeamsTab("contacts")}>
+                    Contacts
+                  </button>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                  <div className="tabs">
-                    <button className={teamsTab === "profiles" ? "on" : ""} onClick={() => setTeamsTab("profiles")}>Profiles</button>
-                    <button className={teamsTab === "deliverables" ? "on" : ""} onClick={() => setTeamsTab("deliverables")}>
-                      Deliverables
-                      {deliverables.outstanding > 0 && (
-                        <span className="badge" style={{ marginLeft: 6, background: deliverables.overdue ? T.danger : T.warnInk }}>
-                          {deliverables.outstanding}
-                        </span>
-                      )}
-                    </button>
-                    <button className={teamsTab === "contacts" ? "on" : ""} onClick={() => setTeamsTab("contacts")}>
-                      Contacts
-                    </button>
-                  </div>
-                  {teamsTab === "profiles" && (
-                    <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }}
-                      onClick={() => { const p = blankProfile(null); setProfiles((ps) => [...ps, p]); setActiveProfileId(p.id); }}>
-                      <Plus size={13} /> Add team
-                    </button>
-                  )}
-                </div>
+                {/* Always present, on every tab: all three are views of the same
+                    team profiles, so adding one is always the right action. */}
+                <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }}
+                  onClick={() => { const p = blankProfile(null); setProfiles((ps) => [...ps, p]); setTeamsTab("profiles"); setActiveProfileId(p.id); }}>
+                  <Plus size={13} /> Add team
+                </button>
+              </div>
+
+              {/* One filter, shared by all three tabs, in the same place on each. */}
+              <div className="chiprow" style={{ marginTop: 14 }}>
+                <button className={"chip chipx" + (profileCallFilter === "all" ? " on" : "")} onClick={() => setProfileCallFilter("all")}>
+                  <span className="lbl">All calls</span><span className="n">{profileRows.length}</span>
+                </button>
+                {teamFilterGroups.map(({ call, teams: ps }) => (
+                  <button key={call.id} title={call.topic}
+                    className={"chip chipx" + (profileCallFilter === call.id ? " on" : "")}
+                    style={profileCallFilter === call.id
+                      ? { background: call.accent, borderColor: call.accent, color: "#fff" }
+                      : { borderColor: call.accent, color: call.accent }}
+                    onClick={() => setProfileCallFilter(call.id)}>
+                    <span className="lbl">{call.name}{call.topic && call.id !== UNASSIGNED ? ` · ${call.topic}` : ""}</span>
+                    <span className="n">{ps.length}</span>
+                  </button>
+                ))}
               </div>
 
               {teamsTab === "contacts" ? (
@@ -2324,25 +2360,9 @@ export default function App() {
                   {/* One directory of every person on file, so a mailing list
                       never has to be rebuilt team by team. Past cycles are off
                       by default — they are a separate read from storage — and
-                      are dimmed and marked when switched on. */}
-                  <div className="chiprow" style={{ marginTop: 18 }}>
-                    <button className={"chip chipx" + (profileCallFilter === "all" ? " on" : "")} onClick={() => setProfileCallFilter("all")}>
-                      <span className="lbl">All calls</span><span className="n">{contactRows.length}</span>
-                    </button>
-                    {contactCalls.map((c) => (
-                      <button key={c.id} title={c.topic}
-                        className={"chip chipx" + (profileCallFilter === c.id ? " on" : "")}
-                        style={profileCallFilter === c.id
-                          ? { background: c.accent, borderColor: c.accent, color: "#fff" }
-                          : { borderColor: c.accent, color: c.accent }}
-                        onClick={() => setProfileCallFilter(c.id)}>
-                        <span className="lbl">{c.name}{c.topic && c.id !== UNASSIGNED ? ` · ${c.topic}` : ""}</span>
-                        <span className="n">{contactRows.filter((r) => callMatches(r.call, c.id)).length}</span>
-                      </button>
-                    ))}
-                  </div>
-
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+                      are dimmed and marked when switched on. The call filter
+                      lives in the shared sub-header above. */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 16 }}>
                     <button className="mini" onClick={copyEmails} title="Copy every address in this view, ready to paste into a mail client">
                       <Copy size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
                       {copiedAll ? "Copied ✓" : `Copy ${contactEmails.length} email${contactEmails.length === 1 ? "" : "s"}`}
@@ -2410,25 +2430,33 @@ export default function App() {
               ) : teamsTab === "deliverables" ? (
                 <>
                   {/* What are we waiting on? One list, worst first, so nothing
-                      has to be hunted for team by team. */}
-                  <div className="grid resp" style={{ gridTemplateColumns: "repeat(3,1fr)", marginTop: 18, gap: 12 }}>
-                    <Stat n={deliverables.overdue} l={`Overdue or due today`} accent={deliverables.overdue ? T.danger : accent} />
-                    <Stat n={deliverables.soon} l={`Due within ${SOON_DAYS} days`} accent={deliverables.soon ? T.warnInk : accent} />
-                    <Stat n={deliverables.teamsOwing} l="Teams that owe us something" accent={accent} />
+                      has to be hunted for team by team. It answers the same
+                      call filter as the other two tabs; the count on the tab
+                      itself stays the cohort-wide total, matching the sidebar. */}
+                  <div className="grid resp" style={{ gridTemplateColumns: "repeat(3,1fr)", marginTop: 16, gap: 12 }}>
+                    <Stat n={shownDeliverables.overdue} l={`Overdue or due today`} accent={shownDeliverables.overdue ? T.danger : accent} />
+                    <Stat n={shownDeliverables.soon} l={`Due within ${SOON_DAYS} days`} accent={shownDeliverables.soon ? T.warnInk : accent} />
+                    <Stat n={shownDeliverables.teamsOwing} l="Teams that owe us something" accent={accent} />
                   </div>
 
                   <div className="card" style={{ marginTop: 16 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 4 }}>
-                      <div className="eyebrow"><Inbox size={12} style={{ verticalAlign: -2, marginRight: 5 }} />Waiting on · {deliverables.outstanding} outstanding</div>
+                      <div className="eyebrow">
+                        <Inbox size={12} style={{ verticalAlign: -2, marginRight: 5 }} />
+                        Waiting on · {shownDeliverables.outstanding} outstanding
+                        {profileCallFilter !== "all" && ` in ${filteredCallName}`}
+                      </div>
                       <div className="mono" style={{ fontSize: 11.5, color: T.muted }}>Today is {fmtDate(todayISO())}</div>
                     </div>
 
-                    {deliverables.rows.length === 0 ? (
+                    {shownDeliverables.rows.length === 0 ? (
                       <div className="empty">
                         <PackageCheck size={22} style={{ color: T.ok, display: "block", margin: "0 auto 8px" }} />
-                        Nothing outstanding. Every deliverable on file is submitted.
+                        {profileCallFilter !== "all" && deliverables.outstanding > 0
+                          ? `Nothing outstanding in ${filteredCallName}. ${deliverables.outstanding} elsewhere — switch to All calls to see them.`
+                          : "Nothing outstanding. Every deliverable on file is submitted."}
                       </div>
-                    ) : deliverables.rows.map((d) => (
+                    ) : shownDeliverables.rows.map((d) => (
                       <div key={`${d.profileId}:${d.id}`} className="delrow">
                         <Pill bg={d.state.bg} fg={d.state.fg}>{d.state.label}</Pill>
                         <div style={{ flex: 1, minWidth: 0 }}>
@@ -2450,14 +2478,14 @@ export default function App() {
                   </div>
 
                   {/* Per-team roll-up, so it is obvious who is consistently behind. */}
-                  {profiles.length > 0 && (
+                  {visibleProfiles.length > 0 && (
                     <div className="card" style={{ marginTop: 16 }}>
                       <div className="eyebrow" style={{ marginBottom: 6 }}>By team</div>
                       <div style={{ overflowX: "auto" }}>
                         <table>
                           <thead><tr><th scope="col">Team</th><th scope="col">Outstanding</th><th scope="col">Submitted</th><th scope="col">Status</th><th scope="col" aria-label="Open" /></tr></thead>
                           <tbody>
-                            {[...profiles].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => {
+                            {[...visibleProfiles].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => {
                               const all = p.deliverables || [];
                               const out = all.filter(isOutstanding);
                               const worst = profileDeliverableState(p);
@@ -2498,26 +2526,6 @@ export default function App() {
                     </div>
                   ) : (
                     <>
-                      {/* Teams are read one call at a time, the same way the
-                          Selection pipeline is, so a themed call's teams never
-                          sit in an undifferentiated list with the Regular ones. */}
-                      <div className="chiprow" style={{ marginTop: 18 }}>
-                        <button className={"chip chipx" + (profileCallFilter === "all" ? " on" : "")} onClick={() => setProfileCallFilter("all")}>
-                          <span className="lbl">All calls</span><span className="n">{profiles.length}</span>
-                        </button>
-                        {profileGroups.map(({ call, teams: ps }) => (
-                          <button key={call.id} title={call.topic}
-                            className={"chip chipx" + (profileCallFilter === call.id ? " on" : "")}
-                            style={profileCallFilter === call.id
-                              ? { background: call.accent, borderColor: call.accent, color: "#fff" }
-                              : { borderColor: call.accent, color: call.accent }}
-                            onClick={() => setProfileCallFilter(call.id)}>
-                            <span className="lbl">{call.name}{call.topic && call.id !== UNASSIGNED ? ` · ${call.topic}` : ""}</span>
-                            <span className="n">{ps.length}</span>
-                          </button>
-                        ))}
-                      </div>
-
                       {/* A team chip carries its worst outstanding deliverable, so
                           the teams to chase are visible without opening each one. */}
                       {visibleProfiles.length === 0 ? (
@@ -2982,7 +2990,7 @@ export default function App() {
               {progTab === "attendance" && (
                 roster.length === 0 ? (
                   <div className="card" style={{ marginTop: 20, color: T.muted, fontSize: 13.5 }}>
-                    No members yet. Attendance is built from the member lists in <button onClick={() => setView("teams")} style={{ color: accent, fontWeight: 600, textDecoration: "underline" }}>Teams</button> — add one person per line (name and email) and they'll appear here.
+                    No members yet. Attendance is built from the member lists in <button onClick={() => setView("teams")} style={{ color: accent, fontWeight: 600, textDecoration: "underline" }}>Phase I teams</button> — add one person per line (name and email) and they'll appear here.
                   </div>
                 ) : (() => {
                   const cur = sessions.find((s) => s.sid === attSessionId) || sessions[0];
@@ -3266,8 +3274,8 @@ export default function App() {
             <>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
                 <div>
-                  <div className="h1 disp">Phase II · funded teams</div>
-                  <div className="sub">The Maturation-year teams — track disbursement of their award and the support meetings held with each.</div>
+                  <div className="h1 disp">Phase II teams · funded</div>
+                  <div className="sub">The Maturation-year teams — the only place money is tracked. Record each award, its disbursement, and the support meetings held.</div>
                 </div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   {missingP2.length > 0 && (
