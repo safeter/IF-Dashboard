@@ -1,22 +1,26 @@
 import { useState, useEffect, useMemo } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
-import { useCloudSection, useSaveStatus, retryFailedSaves, writeRows, deleteCycleData } from "./lib/cloud";
+import {
+  useCloudSection, useSaveStatus, retryFailedSaves, writeRows, deleteCycleData,
+  conflictedSections, forceConflicts, dropConflicts,
+} from "./lib/cloud";
 import { supabase } from "./lib/supabase";
 import { T, PALETTE } from "./lib/theme";
-import { ui, DialogHost, NoteField, DateField, todayISO, fmtDate } from "./lib/ui";
+import { ui, DialogHost, NoteField, DateField, todayISO, fmtDate, safeUrl, linkHost } from "./lib/ui";
 import {
   callFor, callGroups, matchCall, legacyCallId, UNASSIGNED,
   deliverableState, isOutstanding, deliverableSummary, profileDeliverableState, SOON_DAYS,
-  parseMembers,
+  parseMembers, TEAM_STATUS, statusOf, isRunning,
+  JUDGE_MAX, judgeScores, hasBreakdown, totalScore, judgesIn,
 } from "./lib/model";
 import {
   LayoutGrid, Megaphone, ListChecks, CalendarDays,
   Check, Clock, X, Sparkles, GraduationCap,
   UploadCloud, RefreshCw, CalendarCheck, Trophy, Pizza,
   CheckCircle2, Circle, Search, Award, Plus, Trash2, Pencil,
-  ChevronDown, ChevronUp, ChevronsUp, ChevronsDown, Download, Upload, Settings, AlertTriangle, Users, BookOpen, Copy, Wallet,
-  PackageCheck, Inbox, Mail, Printer,
+  ChevronDown, ChevronUp, Download, Upload, Settings, AlertTriangle, Users, BookOpen, Copy, Wallet,
+  PackageCheck, Inbox, ExternalLink, Ban, Mail, Printer,
 } from "lucide-react";
 
 /* ============================================================
@@ -79,8 +83,16 @@ td{padding:11px 12px;border-bottom:1px solid ${T.hairline};font-size:13.5px;vert
 tr:last-child td{border-bottom:none}
 .scorebox{width:54px;padding:5px 7px;border:1px solid ${T.hairline};border-radius:8px;
   font-family:'IBM Plex Mono';font-size:13px;text-align:center;background:${T.paper}}
-.mini{font-size:11px;font-weight:600;padding:4px 9px;border-radius:999px;border:1px solid ${T.hairline};
-  background:${T.surface};color:${T.muted}}
+.mini{font-size:11px;font-weight:600;padding:5px 10px;border-radius:999px;border:1px solid ${T.hairline};
+  background:${T.surface};color:${T.muted};min-height:26px}
+/* Every icon-only control clears the 24px minimum target. The glyph keeps its
+   size; the padding does the work, so nothing gets visually heavier. */
+.iconbtn{display:inline-grid;place-items:center;min-width:28px;min-height:28px;
+  border-radius:8px;transition:.12s}
+.iconbtn:hover:not(:disabled){background:${T.paper};color:${T.ink}}
+/* Checklist tick and the stage arrows are hit as often as anything here. */
+.chk button[title="Check off"]{min-width:28px;min-height:28px;display:grid;place-items:center;border-radius:8px}
+.chk button[title="Check off"]:hover{background:${T.paper}}
 .mini.on{border-color:var(--accent);color:var(--accent);background:${T.surface}}
 .col{background:${T.paper};border:1px solid ${T.hairline};border-radius:14px;padding:12px;min-width:0}
 .board{display:grid;grid-template-columns:repeat(6,minmax(158px,1fr));gap:10px;overflow-x:auto;padding-bottom:6px}
@@ -508,6 +520,109 @@ const EInput = ({ value, onChange, placeholder, w, mono, align, title, ariaLabel
   />
 );
 
+/**
+ * Panel scoring for one record.
+ *
+ * Shows the total, and opens into one box per judge. Entering a breakdown
+ * makes the total derived and read-only, so the two can never disagree; a
+ * record that only has the old single figure keeps it until someone opens
+ * the panel and enters the parts.
+ */
+function ScorePanel({ rec, panel, onChange, label }) {
+  const [open, setOpen] = useState(false);
+  const parts = judgeScores(rec, panel);
+  const breakdown = hasBreakdown(rec);
+  const total = totalScore(rec, panel);
+  const max = panel * JUDGE_MAX;
+  const inCount = judgesIn(rec, panel);
+
+  const setPart = (i, raw) => {
+    const digits = raw.replace(/[^\d]/g, "").slice(0, 1);
+    const next = [...parts];
+    next[i] = digits === "" ? "" : Math.min(Number(digits), JUDGE_MAX);
+    onChange({ scores: next.map((v) => (v === "" ? null : v)) });
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+        {breakdown ? (
+          <span className="scorebox" title={`Sum of ${inCount} of ${panel} judges`}
+            style={{ display: "inline-grid", placeItems: "center", fontWeight: 600 }}>{total}</span>
+        ) : (
+          <input className="scorebox" aria-label={label} value={rec.score ?? ""} placeholder="—"
+            onChange={(e) => { const v = e.target.value.replace(/[^\d]/g, "").slice(0, 2); onChange({ score: v === "" ? "" : Math.min(Number(v), max) }); }} />
+        )}
+        <button className="mini" onClick={() => setOpen((o) => !o)}
+          title={breakdown ? "Per-judge scores" : "Enter each judge's score instead of one total"}
+          style={breakdown ? { borderColor: accentless(inCount, panel), color: accentless(inCount, panel) } : undefined}>
+          {breakdown ? `${inCount}/${panel} judges` : "By judge"}
+        </button>
+      </div>
+      {open && (
+        <div style={{ display: "flex", gap: 4, marginTop: 7, flexWrap: "wrap", alignItems: "center" }}>
+          {parts.map((v, i) => (
+            <input key={i} className="scorebox" value={v} placeholder="–"
+              aria-label={`Judge ${i + 1} score out of ${JUDGE_MAX}`}
+              title={`Judge ${i + 1} · out of ${JUDGE_MAX}`}
+              onChange={(e) => setPart(i, e.target.value)}
+              style={{ width: 34, padding: "4px 2px" }} />
+          ))}
+          <span className="mono" style={{ fontSize: 10.5, color: T.muted, marginLeft: 4 }}>
+            /{JUDGE_MAX} each · {total ?? 0}/{max}
+          </span>
+          {breakdown && (
+            <button className="mini" title="Clear the breakdown and go back to one typed total"
+              onClick={() => { onChange({ scores: [] }); setOpen(false); }}>Clear</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+/* Amber until every judge is in, green once the panel is complete. */
+const accentless = (inCount, panel) => (inCount >= panel ? T.ok : T.warnInk);
+
+/**
+ * A list of document links.
+ *
+ * The agreement, the budget sheet, the pitch deck all live in Drive; the app
+ * only needs to point at them. Anything that is not http(s) after
+ * normalisation is held as text and never rendered as a live link.
+ */
+function LinkList({ links, onChange, addLabel = "Link", placeholder = "Paste a Drive or SharePoint link" }) {
+  const list = links || [];
+  const set = (i, patch) => onChange(list.map((l, j) => (j === i ? { ...l, ...patch } : l)));
+  return (
+    <>
+      {list.map((l, i) => {
+        const href = safeUrl(l.url);
+        return (
+          <div key={l.id || i} style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 6 }}>
+            <EInput value={l.label} onChange={(v) => set(i, { label: v })} placeholder="What it is" w="38%" ariaLabel="Link label" />
+            <EInput value={l.url} onChange={(v) => set(i, { url: v })} placeholder={placeholder} ariaLabel="Link address" />
+            {href ? (
+              <a href={href} target="_blank" rel="noopener noreferrer" className="mini"
+                 title={href} style={{ textDecoration: "none", whiteSpace: "nowrap", flex: "0 0 auto" }}>
+                <ExternalLink size={11} style={{ verticalAlign: -1, marginRight: 4 }} />{linkHost(l.url) || "Open"}
+              </a>
+            ) : (
+              <span className="mini" style={{ flex: "0 0 auto", opacity: l.url ? 1 : 0.5, borderStyle: "dashed" }}
+                    title={l.url ? "Not a web address — nothing to open" : "No address yet"}>
+                {l.url ? "Not a link" : "Empty"}
+              </span>
+            )}
+            <IconBtn title="Remove link" onClick={() => onChange(list.filter((_, j) => j !== i))}><Trash2 size={13} /></IconBtn>
+          </div>
+        );
+      })}
+      <button className="mini" style={{ marginTop: 8 }} onClick={() => onChange([...list, { id: uid(), label: "", url: "" }])}>
+        <Plus size={11} style={{ verticalAlign: -1, marginRight: 3 }} />{addLabel}
+      </button>
+    </>
+  );
+}
+
 /* Icon-only control. Every one carries a label so the screen is navigable
    without sight of the glyph. */
 const IconBtn = ({ onClick, title, children, color, disabled, style }) => (
@@ -516,8 +631,9 @@ const IconBtn = ({ onClick, title, children, color, disabled, style }) => (
     title={title}
     aria-label={title}
     disabled={disabled}
+    className="iconbtn"
     style={{
-      color: color || T.muted, display: "grid", placeItems: "center", padding: 3,
+      color: color || T.muted,
       opacity: disabled ? 0.3 : 1, cursor: disabled ? "default" : "pointer", ...style,
     }}
   >
@@ -1047,8 +1163,8 @@ export default function App() {
         ? profileCallFilter
         : (accentObj ? accentObj.id : "regular")),
     members: "", dept: "", supervisor: "", mentor: "", finance: "pending", notes: "",
-    budget: "", spent: "",
-    meetings: [], deliverables: [],
+    budget: "", spent: "", status: "active",
+    meetings: [], deliverables: [], links: [],
   });
   const missingProfiles = teams.filter(
     (t) => t.outcome === "select" && !profiles.some((p) => p.teamId === t.id || (p.name && p.name === t.name))
@@ -1100,7 +1216,7 @@ export default function App() {
   const addMissingResults = () => {
     if (!missingResults.length) return;
     setResults((rs) => [...rs, ...missingResults.map((t) => ({
-      id: uid(), teamId: t.id, team: t.name, pitched: false, awards: [], phase2: false, amount: "", note: "",
+      id: uid(), teamId: t.id, team: t.name, pitched: false, score: "", scores: [], awards: [], phase2: false, amount: "", note: "",
     }))]);
   };
   const updResult = (id, patch) => setResults((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -1421,7 +1537,7 @@ export default function App() {
      field, so both read as zero. */
   const budgetOf = (p) => Number(p.budget) || 0;
   const spentOf = (p) => Number(p.spent) || 0;
-  const cohortBudget = visibleProfiles.reduce(
+  const cohortBudget = visibleProfiles.filter(isRunning).reduce(
     (a, p) => {
       const b = budgetOf(p), sp = spentOf(p);
       return { allocated: a.allocated + b, spent: a.spent + sp, withBudget: a.withBudget + (b > 0 ? 1 : 0), over: a.over + (b > 0 && sp > b ? 1 : 0) };
@@ -1503,12 +1619,6 @@ export default function App() {
     const j = i + dir;
     if (j < 0 || j >= ss.length) return ss;
     const c = [...ss]; [c[i], c[j]] = [c[j], c[i]]; return c;
-  });
-  const moveSessionEnd = (i, toTop) => setSessions((ss) => {
-    if (i < 0 || i >= ss.length) return ss;
-    const c = [...ss]; const [it] = c.splice(i, 1);
-    if (toTop) c.unshift(it); else c.push(it);
-    return c;
   });
 
   /* Print the finalized programming as a "Calendar of Activities" sheet
@@ -1776,7 +1886,7 @@ export default function App() {
   const utilPanel = (
     <>
       <button onClick={() => setCyOpen((o) => !o)} title="Switch cycle"
-        style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", textAlign: "left" }}>
+        style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", textAlign: "left", minHeight: 28, padding: "2px 0" }}>
         <span className="eyebrow">Cycle {viewedCycle.label}</span>
         <ChevronDown size={12} style={{ color: T.muted, transform: cyOpen ? "rotate(180deg)" : "none", transition: ".12s" }} />
       </button>
@@ -1790,9 +1900,9 @@ export default function App() {
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.label}</span>
                 <span className="mono" style={{ fontSize: 10, color: c.status === "active" ? T.ok : T.muted }}>{c.status === "active" ? "active" : "past"}</span>
               </button>
-              <button onClick={() => renameCycle(c)} title="Rename cycle" style={{ color: T.muted, display: "grid", placeItems: "center", padding: 3 }}><Pencil size={11} /></button>
+              <IconBtn onClick={() => renameCycle(c)} title="Rename cycle"><Pencil size={11} /></IconBtn>
               {c.id !== activeCycle.id && (
-                <button onClick={() => deleteCycle(c)} title="Delete cycle" style={{ color: T.muted, display: "grid", placeItems: "center", padding: 3 }}><Trash2 size={11} /></button>
+                <IconBtn onClick={() => deleteCycle(c)} title="Delete cycle"><Trash2 size={11} /></IconBtn>
               )}
             </div>
           ))}
@@ -1825,7 +1935,31 @@ export default function App() {
     </>
   );
 
-  const saveChip = saveState.failed > 0 ? (
+  /* Someone else wrote to a screen we were editing. Their version is on the
+     server and ours is held locally; both are real work, so the choice goes to
+     the person who is here rather than to whoever happened to save last. */
+  const resolveConflict = async () => {
+    const names = [...new Set(conflictedSections())];
+    const list = names.length ? names.join(", ") : "this screen";
+    const choice = await ui.choose(
+      `Someone else saved changes to ${list} while you were editing. Nothing of theirs has been overwritten, and your edits are still on screen.\n\nTake their version and lose your unsaved edits, or keep yours and write over theirs?`,
+      { title: "Changed by someone else", confirmLabel: "Take theirs", altLabel: "Keep mine", cancelLabel: "Decide later" }
+    );
+    if (choice === true) {
+      dropConflicts();
+      window.location.reload();
+    } else if (choice === "alt") {
+      if (await forceConflicts()) ui.toast("Your version was saved over theirs.");
+      else await ui.alert("Couldn't save. Check your connection and try again.");
+    }
+  };
+
+  const saveChip = saveState.conflicted > 0 ? (
+    <button className="savechip" onClick={resolveConflict} style={{ color: T.warnInk, fontWeight: 600 }}
+      title="Someone else saved this screen while you were editing">
+      <AlertTriangle size={12} /> Changed by someone else
+    </button>
+  ) : saveState.failed > 0 ? (
     <button className="savechip" onClick={retryFailedSaves} title="A change didn't save — click to retry" style={{ color: T.danger }}>
       <AlertTriangle size={12} /> Not saved · Retry
     </button>
@@ -2058,7 +2192,7 @@ export default function App() {
                               {p.done ? <><Check size={11} style={{ verticalAlign: -1 }} /> Done</> : "Planned"}
                             </button>
                           </td>
-                          <td><button onClick={() => rmClass(i)} title="Remove" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button></td>
+                          <td><IconBtn onClick={() => rmClass(i)} title="Remove"><Trash2 size={14} /></IconBtn></td>
                         </tr>
                       ))}
                     </tbody>
@@ -2087,7 +2221,7 @@ export default function App() {
                               {p.done ? <><Check size={11} style={{ verticalAlign: -1 }} /> Done</> : "Planned"}
                             </button>
                           </td>
-                          <td><button onClick={() => rmPizza(i)} title="Remove" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button></td>
+                          <td><IconBtn onClick={() => rmPizza(i)} title="Remove"><Trash2 size={14} /></IconBtn></td>
                         </tr>
                       ))}
                     </tbody>
@@ -2102,7 +2236,7 @@ export default function App() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
                 <div>
                   <div className="h1 disp">Selection pipeline</div>
-                  <div className="sub">Scores are mirrored from Airtable by hand — the sum of {JUDGES} judges scoring out of 5, so {MAX_SCORE} is the ceiling. Track who wants to interview each team, then take them to a decision.</div>
+                  <div className="sub">{JUDGES} judges score out of {JUDGE_MAX}, so {MAX_SCORE} is the ceiling. Enter the panel's scores one by one and the total is worked out for you — or type a total if that is all you have. Track who wants to interview each team, then take them to a decision.</div>
                 </div>
                 <div className="tabs">
                   <button className={selTab === "list" ? "on" : ""} onClick={() => setSelTab("list")}>Interview list</button>
@@ -2228,13 +2362,12 @@ export default function App() {
                                     <EInput value={(t.flaggedBy || []).join(", ")} onChange={(v) => upd(t.id, { flaggedBy: v.split(/[,;·]/).map((x) => x.trim()).filter(Boolean) })} placeholder="Judges, Program team" />
                                   </td>
                                   <td>
-                                    <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                                      <input className="scorebox" aria-label={`Score for ${t.name || "this team"}`} value={t.score ?? ""}
-                                        onChange={(e) => { const v = e.target.value.replace(/\D/g, "").slice(0, 2); upd(t.id, { score: v === "" ? "" : Math.min(Number(v), MAX_SCORE) }); }} placeholder="—" />
-                                      <span className="mono" style={{ fontSize: 10.5, color: T.muted }}>{t.score ? `${(Number(t.score) / JUDGES).toFixed(1)}/5` : ""}</span>
-                                    </div>
+                                    <ScorePanel rec={t} panel={JUDGES}
+                                      label={`Score for ${t.name || "this team"}`}
+                                      onChange={(patch) => upd(t.id, patch)} />
                                   </td>
-                                  <td><button onClick={() => cycleAgreed(t)} title="Click to cycle: pending → agreed → declined">{agreedPill(t.agreed)}</button></td>
+                                  <td><button onClick={() => cycleAgreed(t)} title="Click to cycle: pending → agreed → declined"
+                                        style={{ minHeight: 28, display: "inline-flex", alignItems: "center" }}>{agreedPill(t.agreed)}</button></td>
                                   <td style={{ minWidth: 118 }}><EInput value={t.date} onChange={(v) => upd(t.id, { date: v })} placeholder="Set date/time" mono /></td>
                                   <td>
                                     <select value={t.outcome ?? ""} aria-label={`Outcome for ${t.name || "this team"}`} onChange={(e) => upd(t.id, { outcome: e.target.value || null })}
@@ -2296,7 +2429,10 @@ export default function App() {
                                 <div style={{ fontWeight: 600, fontSize: 13 }}>{t.name || "Untitled"}</div>
                                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 7, gap: 6 }}>
                                   <span className="calltag" style={{ background: call.accent }}>{call.name}</span>
-                                  <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>{t.score != null && t.score !== "" ? `${t.score}/${MAX_SCORE}` : "—"}</span>
+                                  <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}
+                                    title={hasBreakdown(t) ? `${judgesIn(t, JUDGES)} of ${JUDGES} judges in` : undefined}>
+                                    {totalScore(t, JUDGES) != null ? `${totalScore(t, JUDGES)}/${MAX_SCORE}` : "—"}
+                                  </span>
                                 </div>
                                 <div style={{ display: "flex", gap: 6, marginTop: 9 }}>
                                   <button className="mini" aria-label="Move to previous stage" style={{ flex: 1, opacity: si === 0 ? 0.35 : 1 }} disabled={si === 0} onClick={() => upd(t.id, { stage: STAGES[si - 1].id })}>←</button>
@@ -2508,9 +2644,11 @@ export default function App() {
                                   <td style={{ minWidth: 160, fontWeight: 600 }}>{p.name || "Untitled team"}</td>
                                   <td className="mono">{out.length}</td>
                                   <td className="mono" style={{ color: T.muted }}>{all.length - out.length}/{all.length}</td>
-                                  <td>{worst
-                                    ? <Pill bg={worst.bg} fg={worst.fg}>{worst.label}</Pill>
-                                    : <Pill bg={T.okTint} fg={T.ok}><Check size={12} /> All in</Pill>}</td>
+                                  <td>{!isRunning(p)
+                                    ? <Pill bg={statusOf(p).bg} fg={statusOf(p).fg}><Ban size={12} /> {statusOf(p).label}</Pill>
+                                    : worst
+                                      ? <Pill bg={worst.bg} fg={worst.fg}>{worst.label}</Pill>
+                                      : <Pill bg={T.okTint} fg={T.ok}><Check size={12} /> All in</Pill>}</td>
                                   <td>
                                     <button className="mini" onClick={() => { setActiveProfileId(p.id); setProfileCallFilter("all"); setTeamsTab("profiles"); }}>Open</button>
                                   </td>
@@ -2574,15 +2712,25 @@ export default function App() {
                             <div className="chiprow">
                               {[...groupProfiles].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => {
                                 const worst = profileDeliverableState(p);
+                                const st = statusOf(p);
                                 const on = activeProfile && activeProfile.id === p.id;
+                                const running = isRunning(p);
+                                const hint = [p.name || "Untitled", st.id !== "active" ? st.label : null, worst ? worst.label : null]
+                                  .filter(Boolean).join(" — ");
                                 return (
-                                  <button key={p.id} title={worst ? `${p.name || "Untitled"} — ${worst.label}` : p.name || "Untitled"}
+                                  <button key={p.id} title={hint}
                                     className={"chip" + (on ? " on" : "")} onClick={() => setActiveProfileId(p.id)}
                                     style={on
                                       ? { display: "inline-flex", alignItems: "center", gap: 7, background: call.accent, borderColor: call.accent }
-                                      : { display: "inline-flex", alignItems: "center", gap: 7, borderLeft: `3px solid ${call.accent}` }}>
-                                    {worst && <span style={{ width: 7, height: 7, borderRadius: 999, background: on ? "#fff" : worst.fg, flex: "0 0 7px" }} />}
+                                      : { display: "inline-flex", alignItems: "center", gap: 7, borderLeft: `3px solid ${call.accent}`,
+                                          opacity: running ? 1 : 0.55,
+                                          textDecoration: running ? "none" : "line-through" }}>
+                                    {!running && <Ban size={11} style={{ flex: "0 0 auto", color: on ? "#fff" : T.muted }} />}
+                                    {running && worst && <span style={{ width: 7, height: 7, borderRadius: 999, background: on ? "#fff" : worst.fg, flex: "0 0 7px" }} />}
                                     {p.name || "Untitled"}
+                                    {st.id === "atrisk" && (
+                                      <span className="mono" style={{ fontSize: 9.5, color: on ? "#fff" : st.fg, opacity: on ? 0.9 : 1 }}>at risk</span>
+                                    )}
                                   </button>
                                 );
                               })}
@@ -2622,6 +2770,20 @@ export default function App() {
                               <div><div className="eyebrow" style={{ marginBottom: 3 }}>Department</div><EInput value={activeProfile.dept} onChange={(v) => updProfile(activeProfile.id, { dept: v })} placeholder="e.g. MIE" /></div>
                               <div><div className="eyebrow" style={{ marginBottom: 3 }}>Supervisor</div><EInput value={activeProfile.supervisor} onChange={(v) => updProfile(activeProfile.id, { supervisor: v })} placeholder="Professor" /></div>
                               <div><div className="eyebrow" style={{ marginBottom: 3 }}>Mentor</div><EInput value={activeProfile.mentor} onChange={(v) => updProfile(activeProfile.id, { mentor: v })} placeholder="Assigned mentor" /></div>
+                              <div>
+                                <div className="eyebrow" style={{ marginBottom: 3 }}>Status</div>
+                                <select
+                                  value={statusOf(activeProfile).id}
+                                  aria-label="Team status"
+                                  onChange={(e) => updProfile(activeProfile.id, { status: e.target.value })}
+                                  style={{
+                                    fontFamily: "IBM Plex Mono", fontSize: 11.5, padding: "5px 7px", borderRadius: 8,
+                                    background: T.surface, fontWeight: 600, maxWidth: "100%",
+                                    border: `1px solid ${statusOf(activeProfile).fg}`, color: statusOf(activeProfile).fg,
+                                  }}>
+                                  {TEAM_STATUS.map((st) => <option key={st.id} value={st.id}>{st.label}</option>)}
+                                </select>
+                              </div>
                               <div>
                                 <div className="eyebrow" style={{ marginBottom: 3 }}>Finance account</div>
                                 <button className={"mini" + (activeProfile.finance === "opened" ? " on" : "")}
@@ -2681,6 +2843,12 @@ export default function App() {
                                 </div>
                               );
                             })()}
+                            <div className="eyebrow" style={{ margin: "14px 0 3px" }}>Documents</div>
+                            <LinkList links={activeProfile.links}
+                              onChange={(links) => updProfile(activeProfile.id, { links })}
+                              addLabel="Document"
+                              placeholder="Agreement, budget sheet, deck…" />
+
                             <div className="eyebrow" style={{ margin: "14px 0 3px" }}>Notes</div>
                             <NoteField value={activeProfile.notes} onChange={(v) => updProfile(activeProfile.id, { notes: v })}
                               placeholder="Anything worth remembering — context, risks, decisions, who said what. Grows as you type." minRows={6} />
@@ -2846,7 +3014,7 @@ export default function App() {
                           </div>
                           <div style={{ display: "flex", alignItems: "center", gap: 8, flex: "0 0 auto" }}>
                             <div className="disp" style={{ fontSize: 30, fontWeight: 800, color: accent }}>{evPct}%</div>
-                            <button onClick={() => rmEvent(activeEv.id)} title="Remove this event" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button>
+                            <IconBtn onClick={() => rmEvent(activeEv.id)} title="Remove this event"><Trash2 size={14} /></IconBtn>
                           </div>
                         </div>
                         <div className="track" style={{ marginTop: 12 }}><div style={{ width: evPct + "%", background: accent }} /></div>
@@ -2863,7 +3031,7 @@ export default function App() {
                                 </button>
                                 <EInput value={c.label} onChange={(v) => updEvItem(activeEv.id, c.id, { label: v })} placeholder="Step" />
                                 <EInput value={c.owner} onChange={(v) => updEvItem(activeEv.id, c.id, { owner: v })} placeholder="Owner" w="120px" align="right" />
-                                <button onClick={() => rmEvItem(activeEv.id, c.id)} title="Remove" style={{ flex: "0 0 auto", color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={13} /></button>
+                                <IconBtn onClick={() => rmEvItem(activeEv.id, c.id)} title="Remove" style={{ flex: "0 0 auto" }}><Trash2 size={13} /></IconBtn>
                               </div>
                             ))}
                           </div>
@@ -2891,7 +3059,7 @@ export default function App() {
                           <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 1, flexWrap: "wrap" }}>
                             <span className="mono" style={{ color: T.muted, fontSize: 10.5, paddingLeft: 8 }}>seen</span>
                             <EInput value={t.lastSeen} onChange={(v) => updRoad(i, { lastSeen: v })} placeholder="—" mono w="64px" ariaLabel="Last seen" />
-                            <button className="mono" title="Log another rehearsal run" style={{ fontSize: 10.5, color: T.muted, border: `1px solid ${T.hairline}`, borderRadius: 6, padding: "2px 6px" }}
+                            <button className="mono" title="Log another rehearsal run" style={{ fontSize: 10.5, color: T.muted, border: `1px solid ${T.hairline}`, borderRadius: 6, padding: "5px 8px", minHeight: 26 }}
                               onClick={() => updRoad(i, { runs: (Number(t.runs) || 0) + 1 })}>{t.runs} run{Number(t.runs) === 1 ? "" : "s"} +</button>
                           </div>
                           <NoteField value={t.note} onChange={(v) => updRoad(i, { note: v })}
@@ -2930,7 +3098,12 @@ export default function App() {
                 ) : (
                   <div style={{ overflowX: "auto" }}>
                     <table>
-                      <thead><tr><th>Team</th><th>Pitched</th><th>Awards</th><th>Phase 2</th><th>Amount /yr</th><th>Note</th><th></th></tr></thead>
+                      <thead><tr>
+                        <th scope="col">Team</th><th scope="col">Pitched</th>
+                        <th scope="col">Pitch score /{MAX_SCORE}</th>
+                        <th scope="col">Awards</th><th scope="col">Phase 2</th><th scope="col">Amount /yr</th>
+                        <th scope="col">Note</th><th scope="col" aria-label="Remove" />
+                      </tr></thead>
                       <tbody>
                         {results.map((r) => (
                           <tr key={r.id}>
@@ -2939,6 +3112,13 @@ export default function App() {
                               <button className={"mini" + (r.pitched ? " on" : "")} onClick={() => updResult(r.id, { pitched: !r.pitched })}>
                                 {r.pitched ? <><Check size={11} style={{ verticalAlign: -1 }} /> Yes</> : "—"}
                               </button>
+                            </td>
+                            <td style={{ minWidth: 150 }}>
+                              {/* The pitch that decides Phase 2 funding used to
+                                  leave nothing behind but a tick. */}
+                              <ScorePanel rec={r} panel={JUDGES}
+                                label={`Demo Day score for ${r.team || "this team"}`}
+                                onChange={(patch) => updResult(r.id, patch)} />
                             </td>
                             <td style={{ minWidth: 210 }}>
                               <span style={{ display: "inline-flex", gap: 5, flexWrap: "wrap" }}>
@@ -2965,7 +3145,7 @@ export default function App() {
                               </div>
                             </td>
                             <td style={{ minWidth: 200 }}><NoteField value={r.note} onChange={(v) => updResult(r.id, { note: v })} placeholder="Traction note" minRows={1} style={{ fontSize: 12.5 }} /></td>
-                            <td><button onClick={() => rmResult(r.id)} title="Remove" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button></td>
+                            <td><IconBtn onClick={() => rmResult(r.id)} title="Remove"><Trash2 size={14} /></IconBtn></td>
                           </tr>
                         ))}
                       </tbody>
@@ -3005,15 +3185,27 @@ export default function App() {
 
               {progTab === "sessions" && (<>
               <div className="card" style={{ marginTop: 20 }}>
+                {sessions.length > 0 && (
+                  <div className="sessionrow" style={{ display: "flex", gap: 12, alignItems: "center", paddingBottom: 8, borderBottom: `1px solid ${T.hairline}` }}>
+                    <span style={{ flex: "0 0 12px" }} />
+                    <span className="eyebrow" style={{ flex: "0 0 106px" }}>Date &amp; time</span>
+                    <span className="eyebrow" style={{ flex: 1, minWidth: 160 }}>Session &amp; speaker</span>
+                    <span className="eyebrow" style={{ flex: "0 0 84px" }}>Place</span>
+                    <span className="eyebrow" style={{ flex: "0 0 112px" }}>Room booking</span>
+                    <span className="eyebrow" style={{ flex: "0 0 auto" }}>Order</span>
+                    <span className="eyebrow" style={{ flex: "0 0 auto" }}>Status</span>
+                    <span style={{ flex: "0 0 auto", width: 60 }} />
+                  </div>
+                )}
                 <div>
                   {sessions.map((s, i) => {
                     const color = s.kind === "milestone" ? accent : s.kind === "community" ? T.gold : s.kind === "meeting" ? T.info : T.muted;
                     return (
                       <div key={s.sid || `session-${i}`} className="sessionrow" style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "10px 0", borderBottom: i === sessions.length - 1 ? "none" : `1px solid ${T.hairline}` }}>
                         <span style={{ width: 12, height: 12, borderRadius: 999, background: s.done ? color : T.surface, boxShadow: `0 0 0 2px ${color}`, marginTop: 9, flex: "0 0 12px" }} />
-                        <div style={{ width: 72, flex: "0 0 72px" }}>
-                          <EInput value={s.date} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, date: v } : x)))} placeholder="Date" mono />
-                          <EInput value={s.time} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, time: v } : x)))} placeholder="Time" mono />
+                        <div style={{ width: 106, flex: "0 0 106px" }}>
+                          <EInput value={s.date} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, date: v } : x)))} placeholder="Date" mono ariaLabel="Session date" />
+                          <EInput value={s.time} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, time: v } : x)))} placeholder="Time" mono ariaLabel="Session time" />
                         </div>
                         <div style={{ flex: 1, minWidth: 160 }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -3023,11 +3215,9 @@ export default function App() {
                           <EInput value={s.who} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, who: v } : x)))} placeholder="Speaker" />
                         </div>
                         <div style={{ width: 84, flex: "0 0 84px", marginTop: 1 }}>
-                          <div className="eyebrow" style={{ fontSize: 9, marginBottom: 1 }}>Place</div>
-                          <EInput value={s.place} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, place: v } : x)))} placeholder="Room" mono />
+                          <EInput value={s.place} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, place: v } : x)))} placeholder="Room" mono ariaLabel="Room" />
                         </div>
                         <div style={{ width: 112, flex: "0 0 112px", marginTop: 1, display: "flex", flexDirection: "column", gap: 3 }}>
-                          <div className="eyebrow" style={{ fontSize: 9, marginBottom: 1 }}>Room booking</div>
                           <button className="mini" onClick={() => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, roomRequested: !x.roomRequested } : x)))}
                             style={{ fontSize: 10.5, padding: "3px 7px", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap", borderColor: s.roomRequested ? T.info : T.hairline, color: s.roomRequested ? T.info : T.muted }} title="Room request sent to Facilities">
                             {s.roomRequested ? <Check size={11} /> : <Circle size={10} />} Request sent
@@ -3037,17 +3227,15 @@ export default function App() {
                             {s.roomConfirmed ? <CheckCircle2 size={11} /> : <Circle size={10} />} Confirmed
                           </button>
                         </div>
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2, marginTop: 4, flex: "0 0 auto" }}>
-                          <button title="Move to top" disabled={i === 0} onClick={() => moveSessionEnd(i, true)} style={{ color: T.muted, display: "grid", placeItems: "center", padding: 2, opacity: i === 0 ? 0.3 : 1, cursor: i === 0 ? "default" : "pointer" }}><ChevronsUp size={13} /></button>
-                          <button title="Move to bottom" disabled={i === sessions.length - 1} onClick={() => moveSessionEnd(i, false)} style={{ color: T.muted, display: "grid", placeItems: "center", padding: 2, opacity: i === sessions.length - 1 ? 0.3 : 1, cursor: i === sessions.length - 1 ? "default" : "pointer" }}><ChevronsDown size={13} /></button>
-                          <button title="Move up" disabled={i === 0} onClick={() => moveSession(i, -1)} style={{ color: T.muted, display: "grid", placeItems: "center", padding: 2, opacity: i === 0 ? 0.3 : 1, cursor: i === 0 ? "default" : "pointer" }}><ChevronUp size={14} /></button>
-                          <button title="Move down" disabled={i === sessions.length - 1} onClick={() => moveSession(i, 1)} style={{ color: T.muted, display: "grid", placeItems: "center", padding: 2, opacity: i === sessions.length - 1 ? 0.3 : 1, cursor: i === sessions.length - 1 ? "default" : "pointer" }}><ChevronDown size={14} /></button>
+                        <div style={{ display: "flex", gap: 2, marginTop: 3, flex: "0 0 auto" }}>
+                          <IconBtn title="Move up" disabled={i === 0} onClick={() => moveSession(i, -1)}><ChevronUp size={15} /></IconBtn>
+                          <IconBtn title="Move down" disabled={i === sessions.length - 1} onClick={() => moveSession(i, 1)}><ChevronDown size={15} /></IconBtn>
                         </div>
                         <button onClick={() => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, done: !x.done } : x)))}
                           className="mini" style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap", borderColor: s.done ? T.ok : T.hairline, color: s.done ? T.ok : T.muted }} title="Mark held">
                           {s.done ? <CheckCircle2 size={14} /> : <Circle size={14} />}{s.done ? "Held" : "Upcoming"}
                         </button>
-                        <button onClick={() => printSignIn(s)} title="Print attendance sheet for this session" style={{ marginTop: 8, color: T.muted, display: "grid", placeItems: "center" }}><Download size={14} /></button>
+                        <IconBtn onClick={() => printSignIn(s)} title="Print attendance sheet for this session" style={{ marginTop: 8 }}><Download size={14} /></IconBtn>
                         <IconBtn title="Remove session" style={{ marginTop: 8 }} onClick={() => rmSession(i)}><Trash2 size={14} /></IconBtn>
                       </div>
                     );
@@ -3131,10 +3319,9 @@ export default function App() {
                                     <div style={{ fontSize: 13, fontWeight: 500 }}>{r.name}</div>
                                     {r.email && <div className="mono" style={{ fontSize: 10.5, color: T.muted }}>{r.email}</div>}
                                   </div>
-                                  <button onClick={() => removePerson(r)} title={`Remove ${r.name} from ${r.team}`}
-                                    style={{ flex: "0 0 auto", color: T.muted, display: "grid", placeItems: "center", padding: 3 }}>
+                                  <IconBtn onClick={() => removePerson(r)} title={`Remove ${r.name} from ${r.team}`} style={{ flex: "0 0 auto" }}>
                                     <Trash2 size={13} />
-                                  </button>
+                                  </IconBtn>
                                 </div>
                               );
                             })}
@@ -3204,7 +3391,7 @@ export default function App() {
                             <span className="disp" style={{ fontWeight: 700, fontSize: 14.5 }}>{k.title || "Untitled"}</span>
                             <div style={{ display: "flex", gap: 6, alignItems: "center", flex: "0 0 auto" }}>
                               {k.draft && <Pill bg="#FBF1D8" fg="#9a7b12">⚠ Draft</Pill>}
-                              <button onClick={() => setKbEdit(k.id)} title="Edit" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Pencil size={13} /></button>
+                              <IconBtn onClick={() => setKbEdit(k.id)} title="Edit"><Pencil size={13} /></IconBtn>
                             </div>
                           </div>
                           <div style={{ color: T.muted, fontSize: 12.5, marginTop: 7, lineHeight: 1.5, whiteSpace: "pre-wrap", fontFamily: k.category === "templates" ? "'IBM Plex Mono', monospace" : "inherit" }}>
@@ -3341,7 +3528,7 @@ export default function App() {
                                 ))}
                               </div>
                             </td>
-                            <td><button onClick={() => rmAlum(i)} title="Remove" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button></td>
+                            <td><IconBtn onClick={() => rmAlum(i)} title="Remove"><Trash2 size={14} /></IconBtn></td>
                           </tr>
                         ))}
                       </tbody>
@@ -3394,7 +3581,11 @@ export default function App() {
                       return (
                         <button key={p.id} title={p.team || "Untitled"} className={"chip" + (activeP2 && activeP2.id === p.id ? " on" : "")} onClick={() => setActiveP2Id(p.id)} style={{ maxWidth: 260 }}>
                           {p.team || "Untitled"}
-                          <span className="mono" style={{ fontSize: 10, marginLeft: 6, color: full ? T.ok : T.muted }}>
+                          <span className="mono" style={{
+                            fontSize: 10, marginLeft: 6,
+                            color: activeP2 && activeP2.id === p.id ? "#fff" : full ? T.ok : T.muted,
+                            opacity: activeP2 && activeP2.id === p.id ? 0.9 : 1,
+                          }}>
                             {full ? "paid" : `$${paid.toLocaleString()}/${Number(p.awarded) ? "$" + Number(p.awarded).toLocaleString() : "—"}`}
                           </span>
                         </button>
@@ -3414,7 +3605,7 @@ export default function App() {
                         <div className="card">
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                             <div className="eyebrow">Team</div>
-                            <button onClick={() => rmP2(activeP2.id)} title="Remove from tracking" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button>
+                            <IconBtn onClick={() => rmP2(activeP2.id)} title="Remove from tracking"><Trash2 size={14} /></IconBtn>
                           </div>
                           <EInput value={activeP2.team} onChange={(v) => updP2(activeP2.id, { team: v })} placeholder="Team name" />
                           <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 8, marginTop: 10 }}>
@@ -3562,7 +3753,7 @@ function TeamCard({ t, onEdit }) {
         <span className="disp" style={{ fontWeight: 700, fontSize: 15 }}>{t.name || "Untitled team"}</span>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flex: "0 0 auto" }}>
           {t.phase2 && <Pill bg={T.tint} fg={T.burgundy}>Phase II</Pill>}
-          <button onClick={onEdit} title="Edit team" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Pencil size={13} /></button>
+          <IconBtn onClick={onEdit} title="Edit team"><Pencil size={13} /></IconBtn>
         </div>
       </div>
       <div style={{ color: T.muted, fontSize: 12.5, marginTop: 6, lineHeight: 1.45 }}>{t.blurb}</div>
@@ -3635,8 +3826,8 @@ function CallCard({ call, active, palette, editing, onEdit, onChange, onUse, onR
         <span style={{ width: 10, height: 10, borderRadius: 999, background: call.accent }} />
         <span className="disp" style={{ fontWeight: 700, fontSize: 16 }}>{call.name} call</span>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          <button onClick={onEdit} title="Edit call" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Pencil size={13} /></button>
-          {onRemove && <button onClick={onRemove} title="Remove call" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button>}
+          <IconBtn onClick={onEdit} title="Edit call"><Pencil size={13} /></IconBtn>
+          {onRemove && <IconBtn onClick={onRemove} title="Remove call"><Trash2 size={14} /></IconBtn>}
         </div>
       </div>
       <div style={{ color: T.muted, fontSize: 13, marginTop: 6 }}>{call.topic}</div>

@@ -10,29 +10,108 @@ import { supabase } from "./supabase";
 const listeners = new Set();
 const flushers = new Set();
 const failedMap = new Map();
+/* The `updated_at` each section was last seen at. A write only lands if the
+   stored row still carries it, which is what stops one person's save from
+   silently erasing another's. */
+const baselines = new Map();
+/* Payloads a conflict rejected, kept so the author can still force them. */
+const conflicts = new Map();
 let dirtyCount = 0;
 let inFlight = 0;
 
 const rowKey = (r) => `${r.cycle}::${r.section}`;
-const snapshot = () => ({ pending: dirtyCount + inFlight, failed: failedMap.size });
+const snapshot = () => ({ pending: dirtyCount + inFlight, failed: failedMap.size, conflicted: conflicts.size });
 const emit = () => { const s = snapshot(); listeners.forEach((fn) => fn(s)); };
 
-async function writeRow(row) {
+/** Remember the stored timestamp a section was read at. */
+export function noteBaseline(cycle, section, updatedAt) {
+  const key = `${cycle}::${section}`;
+  if (updatedAt) baselines.set(key, updatedAt); else baselines.delete(key);
+}
+
+/**
+ * Write one section.
+ *
+ * Every save replaces the whole section, so two people on the same screen used
+ * to mean the later save erased the earlier one with no sign that anything had
+ * happened. The update is now conditional on the row still carrying the
+ * timestamp we loaded: if someone else has written since, nothing is
+ * overwritten and the payload is parked as a conflict for the user to resolve.
+ *
+ * `force` skips the check — that is the "keep mine" branch, and the only way
+ * to deliberately overwrite.
+ */
+async function writeRow(row, { force = false } = {}) {
   if (!supabase) return true;
+  const key = rowKey(row);
+  const stamp = new Date().toISOString();
+  const baseline = force ? null : baselines.get(key);
   inFlight++; emit();
-  const { error } = await supabase
-    .from("app_state")
-    .upsert({ ...row, updated_at: new Date().toISOString() });
+
+  let ok = false, conflict = false, err = null;
+  try {
+    if (baseline) {
+      const { data, error } = await supabase
+        .from("app_state")
+        .update({ data: row.data, updated_at: stamp })
+        .eq("cycle", row.cycle).eq("section", row.section).eq("updated_at", baseline)
+        .select("updated_at");
+      if (error) {
+        err = error;
+      } else if (data && data.length) {
+        ok = true;
+        baselines.set(key, data[0].updated_at || stamp);
+      } else {
+        // Nothing matched. Either the row was deleted under us, or it moved on.
+        const { data: cur, error: readErr } = await supabase
+          .from("app_state").select("updated_at")
+          .eq("cycle", row.cycle).eq("section", row.section).maybeSingle();
+        if (readErr) {
+          err = readErr;
+        } else if (!cur) {
+          const { error: e2 } = await supabase.from("app_state").upsert({ ...row, updated_at: stamp });
+          if (e2) err = e2; else { ok = true; baselines.set(key, stamp); }
+        } else {
+          conflict = true;
+        }
+      }
+    } else {
+      const { error } = await supabase.from("app_state").upsert({ ...row, updated_at: stamp });
+      if (error) err = error; else { ok = true; baselines.set(key, stamp); }
+    }
+  } catch (e) {
+    err = e;
+  }
+
   inFlight--;
-  if (error) {
-    failedMap.set(rowKey(row), row);
-    console.error("Save failed:", row.section, error.message);
+  if (conflict) {
+    conflicts.set(key, row);
+    console.warn("Not saved — changed by someone else:", row.section);
+  } else if (ok) {
+    failedMap.delete(key);
+    conflicts.delete(key);
   } else {
-    failedMap.delete(rowKey(row));
+    failedMap.set(key, row);
+    console.error("Save failed:", row.section, err && err.message);
   }
   emit();
-  return !error;
+  return ok;
 }
+
+/** Which sections are currently blocked by someone else's write. */
+export const conflictedSections = () => [...conflicts.keys()].map((k) => k.split("::")[1]);
+
+/** Overwrite the other person's version with ours, for every conflict. */
+export async function forceConflicts() {
+  const batch = [...conflicts.values()];
+  conflicts.clear(); emit();
+  let all = true;
+  for (const row of batch) { if (!(await writeRow(row, { force: true }))) all = false; }
+  return all;
+}
+
+/** Abandon our rejected payloads — used when taking their version instead. */
+export function dropConflicts() { conflicts.clear(); emit(); }
 
 /** Subscribe to save state: { pending, failed }. */
 export function useSaveStatus() {
@@ -104,12 +183,13 @@ export function useCloudSection(section, seed, scope) {
     setData(seedRef.current);
     supabase
       .from("app_state")
-      .select("data")
+      .select("data, updated_at")
       .eq("cycle", scope)
       .eq("section", section)
       .maybeSingle()
       .then(({ data: row }) => {
         if (!alive) return;
+        noteBaseline(scope, section, row ? row.updated_at : null);
         if (row && row.data != null) setData(row.data);
         loadedRef.current = true;
       });
@@ -144,6 +224,7 @@ export function useCloudSection(section, seed, scope) {
     setData(value);
     takePending();
     if (!supabase) return true;
+    // Goes through writeRow, so it is conflict-checked like any other save.
     // Unlike the debounced persist, saveNow carries an explicit payload from
     // the caller, so it is safe (and necessary, for client-side migrations)
     // even before this section's initial load has resolved.
@@ -165,10 +246,18 @@ export async function deleteCycleData(cycleId) {
 export async function writeRows(rows) {
   if (!supabase) return true;
   inFlight++; emit();
-  const stamped = rows.map((r) => ({ ...r, updated_at: new Date().toISOString() }));
+  const stamp = new Date().toISOString();
+  const stamped = rows.map((r) => ({ ...r, updated_at: stamp }));
   const { error } = await supabase.from("app_state").upsert(stamped);
-  inFlight--; emit();
-  if (error) console.error("Bulk write failed:", error.message);
+  inFlight--;
+  if (error) {
+    console.error("Bulk write failed:", error.message);
+  } else {
+    // Seeding and restoring are deliberate whole-section writes; record what
+    // they left behind so the next ordinary save has a baseline to check.
+    stamped.forEach((r) => noteBaseline(r.cycle, r.section, r.updated_at));
+  }
+  emit();
   return !error;
 }
 
