@@ -8,6 +8,7 @@ import { ui, DialogHost, NoteField, DateField, todayISO, fmtDate } from "./lib/u
 import {
   callFor, callGroups, matchCall, legacyCallId, UNASSIGNED,
   deliverableState, isOutstanding, deliverableSummary, profileDeliverableState, SOON_DAYS,
+  parseMembers,
 } from "./lib/model";
 import {
   LayoutGrid, Megaphone, ListChecks, CalendarDays,
@@ -15,7 +16,7 @@ import {
   UploadCloud, RefreshCw, CalendarCheck, Trophy, Pizza,
   CheckCircle2, Circle, Search, Award, Plus, Trash2, Pencil,
   ChevronDown, ChevronUp, ChevronsUp, ChevronsDown, Download, Upload, Settings, AlertTriangle, Users, BookOpen, Copy, Wallet,
-  PackageCheck, Inbox,
+  PackageCheck, Inbox, Mail, Printer,
 } from "lucide-react";
 
 /* ============================================================
@@ -173,15 +174,19 @@ tr:last-child td{border-bottom:none}
 .datefield{padding:5px 8px;border:1px solid ${T.hairline};border-radius:8px;font-size:12px;
   background:${T.surface};color:${T.ink};font-family:'IBM Plex Mono',monospace}
 .datefield:focus{outline:none;border-color:var(--accent)}
-.money{display:inline-flex;align-items:center;border:1px solid ${T.hairline};border-radius:8px;
-  background:${T.surface};flex:0 0 auto;padding-right:9px}
-.money:focus-within{border-color:var(--accent);box-shadow:0 0 0 2px ${T.hairline}}
-.money .cur{padding:0 3px 0 9px;color:${T.muted};font-family:'IBM Plex Mono',monospace;font-size:12.5px}
-.money input{border:none;outline:none;background:transparent;color:${T.ink};text-align:right;
-  font-size:13px;padding:6px 0}
-.money input::placeholder{color:#C4BEB7}
-/* Column captions for the payment rows — three fields, one of them money. */
-.subhead{display:flex;align-items:center;gap:8px;padding:2px 0 4px}
+
+/* Money input — boxed like the date beside it. Unboxed, a bare number next to
+   a roomy bordered note field reads as a label rather than something to type
+   in, and amounts end up typed into the note. */
+.moneyfield{display:inline-flex;align-items:center;gap:1px;padding:0 7px;
+  border:1px solid ${T.hairline};border-radius:8px;background:${T.surface};transition:.12s}
+.moneyfield .cur{font-family:'IBM Plex Mono',monospace;font-size:12px;color:${T.muted}}
+.moneyfield .einput{padding:5px 2px}
+.moneyfield .einput:hover,.moneyfield .einput:focus{border-color:transparent;background:transparent;box-shadow:none}
+.moneyfield:focus-within{border-color:var(--accent)}
+/* A payment with no amount contributes nothing to the disbursed total, so the
+   row says so rather than looking complete. */
+.moneyfield.empty{border-style:dashed;border-color:${T.warn};background:${T.warnTint}}
 
 /* call grouping — a themed band per call so two calls never read as one list */
 .callband{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:11px 14px;
@@ -245,6 +250,15 @@ const STAGES = [
 
 const JUDGES = 6;            // panel size
 const MAX_SCORE = JUDGES * 5; // each judge scores /5 → 30 ceiling
+/* The published Phase II maximum. Amounts above it are flagged, never
+   rewritten: clamping every keystroke made the field impossible to edit —
+   appending a digit to 25000 snapped it to 50000 and it stuck there. */
+const MAX_AWARD = 50000;
+/** Digits only, no silent rounding: "$12,500" typed into a money field is 12500. */
+const money = (v, digits = 7) => {
+  const n = String(v ?? "").replace(/\D/g, "").slice(0, digits);
+  return n === "" ? "" : Number(n);
+};
 const SEED_TEAMS = [
   { id:1, name:"NeuroWeave", blurb:"Adaptive EEG headband for focus training", callId:"regular", flaggedBy:["Judges","Program team"], score:26, stage:"scheduled", agreed:"yes", date:"Jul 4, 10:00", outcome:null },
   { id:2, name:"HydroSense", blurb:"Low-cost lead sensors for municipal water", callId:"regular", flaggedBy:["Judges"], score:22, stage:"responded", agreed:"yes", date:"", outcome:null },
@@ -494,33 +508,6 @@ const EInput = ({ value, onChange, placeholder, w, mono, align, title, ariaLabel
   />
 );
 
-/**
- * A money field, drawn as a box.
- *
- * Every other inline field in the app is borderless until hovered, which works
- * where a column of them sits under a header. It fails badly for an amount on
- * a row of its own: an empty one renders as the grey text "0" next to a "$",
- * reading as a label rather than somewhere to type — so the amount gets typed
- * into whichever neighbouring field does look like an input.
- */
-const MoneyInput = ({ value, onChange, w = "92px", ariaLabel, max = 999999 }) => (
-  <span className="money">
-    <span className="cur">$</span>
-    <input
-      className="mono"
-      value={value ?? ""}
-      aria-label={ariaLabel}
-      inputMode="numeric"
-      placeholder="0"
-      onChange={(e) => {
-        const digits = e.target.value.replace(/\D/g, "").slice(0, String(max).length);
-        onChange(digits === "" ? "" : Math.min(Number(digits), max));
-      }}
-      style={{ width: w }}
-    />
-  </span>
-);
-
 /* Icon-only control. Every one carries a label so the screen is navigable
    without sight of the glyph. */
 const IconBtn = ({ onClick, title, children, color, disabled, style }) => (
@@ -730,7 +717,11 @@ export default function App() {
   const [teams, setTeams] = useCloudSection("teams", SEED_TEAMS, cycleId);
   const [callFilter, setCallFilter] = useState("all");   // Selection: which call's teams to show
   const [teamQuery, setTeamQuery] = useState("");        // Selection: free-text search
-  const [teamsTab, setTeamsTab] = useState("profiles");  // Teams: profiles | deliverables
+  const [teamsTab, setTeamsTab] = useState("profiles");  // Teams: profiles | deliverables | contacts
+  const [profileCallFilter, setProfileCallFilter] = useState("all"); // Teams: which call's teams to show
+  const [archive, setArchive] = useState(null);          // Contacts: past cycles' profiles, loaded on demand
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const [copiedAll, setCopiedAll] = useState(false);
   const [alumni, setAlumni] = useCloudSection("alumni", SEED_ALUMNI, "global");
   const [selTab, setSelTab] = useState("list");
   const [dragId, setDragId] = useState(null);
@@ -1018,10 +1009,39 @@ export default function App() {
     return () => { alive = false; };
   }, [cycleId]);
 
-  /* ---- team profiles ---- */
-  const activeProfile = profiles.find((p) => p.id === activeProfileId) || profiles[0] || null;
+  /* ---- team profiles ----
+     A profile's call is a reference to a real entry in this cycle's call
+     list, so the Teams screen can be read one call at a time exactly like
+     Selection. Profiles written before calls were tracked carry either the
+     old binary `cohort` flag (read by `callFor`) or nothing at all — for
+     those, the call is inherited from the matching pipeline team, so no
+     stored data has to be rewritten before the screen is right. */
+  const profileCall = (p) => {
+    if (!p) return callFor(null, callList);
+    if (!p.callId && !p.cohort) {
+      const src = teams.find((t) => t.id === p.teamId || (t.name && p.name && t.name === p.name));
+      if (src) return callFor(src, callList);
+    }
+    return callFor(p, callList);
+  };
+  /* Profiles with their call resolved — what every grouping below reads. */
+  const profileRows = useMemo(
+    () => profiles.map((p) => ({ ...p, callId: profileCall(p).id })),
+    [profiles, teams, callList]   // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  const profileGroups = callGroups(profileRows, callList);
+  const shownProfileGroups = profileCallFilter === "all"
+    ? profileGroups
+    : profileGroups.filter((g) => g.call.id === profileCallFilter);
+  const visibleProfiles = shownProfileGroups.flatMap((g) => g.teams);
+  const activeProfile = visibleProfiles.find((p) => p.id === activeProfileId) || visibleProfiles[0] || null;
   const blankProfile = (t) => ({
     id: uid(), teamId: t ? t.id : null, name: t ? t.name : "",
+    callId: t
+      ? callFor(t, callList).id
+      : (profileCallFilter !== "all" && profileCallFilter !== UNASSIGNED
+        ? profileCallFilter
+        : (accentObj ? accentObj.id : "regular")),
     members: "", dept: "", supervisor: "", mentor: "", finance: "pending", notes: "",
     meetings: [], deliverables: [],
   });
@@ -1033,6 +1053,9 @@ export default function App() {
     setProfiles((ps) => [...ps, ...missingProfiles.map(blankProfile)]);
   };
   const updProfile = (id, patch) => setProfiles((ps) => ps.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  /* Moving a team to another call drops the legacy flag with it, so the two
+     can never disagree about where the team belongs. */
+  const setProfileCall = (id, callId) => updProfile(id, { callId, cohort: undefined });
   const rmProfile = async (id) => {
     const p = profiles.find((x) => x.id === id);
     if (!p) return;
@@ -1041,19 +1064,12 @@ export default function App() {
     setProfiles((ps) => ps.filter((x) => x.id !== id));
     if (activeProfileId === id) setActiveProfileId(null);
   };
-  /* Meetings and deliverables are edited through the parent profile. These
-     read the list out of the updater's own `prev` rather than the `profiles`
-     captured at render time — two edits landing in one batch would otherwise
-     both build on the same stale list, and the second would silently discard
-     the first. */
-  const editSub = (pid, key, fn) =>
-    setProfiles((ps) => ps.map((p) => (p.id === pid ? { ...p, [key]: fn(p[key] || []) } : p)));
   const updSub = (pid, key, subId, patch) =>
-    editSub(pid, key, (list) => list.map((x) => (x.id === subId ? { ...x, ...patch } : x)));
+    updProfile(pid, { [key]: (profiles.find((p) => p.id === pid)?.[key] || []).map((x) => (x.id === subId ? { ...x, ...patch } : x)) });
   const addSub = (pid, key, blank) =>
-    editSub(pid, key, (list) => [...list, { id: uid(), ...blank }]);
+    updProfile(pid, { [key]: [...(profiles.find((p) => p.id === pid)?.[key] || []), { id: uid(), ...blank }] });
   const rmSub = (pid, key, subId) =>
-    editSub(pid, key, (list) => list.filter((x) => x.id !== subId));
+    updProfile(pid, { [key]: (profiles.find((p) => p.id === pid)?.[key] || []).filter((x) => x.id !== subId) });
 
   /* ---- knowledge base ---- */
   const updKb = (id, patch) => setKb((ks) => ks.map((k) => (k.id === id ? { ...k, ...patch } : k)));
@@ -1137,16 +1153,12 @@ export default function App() {
     setPhase2((ps) => ps.filter((x) => x.id !== id));
     if (activeP2Id === id) setActiveP2Id(null);
   };
-  /* Same reasoning as editSub above: build on the updater's own previous
-     state so concurrent edits to payments and meetings cannot clobber. */
-  const editP2Sub = (pid, key, fn) =>
-    setPhase2((ps) => ps.map((p) => (p.id === pid ? { ...p, [key]: fn(p[key] || []) } : p)));
   const updP2Sub = (pid, key, subId, patch) =>
-    editP2Sub(pid, key, (list) => list.map((x) => (x.id === subId ? { ...x, ...patch } : x)));
+    updP2(pid, { [key]: (phase2.find((p) => p.id === pid)?.[key] || []).map((x) => (x.id === subId ? { ...x, ...patch } : x)) });
   const addP2Sub = (pid, key, blank) =>
-    editP2Sub(pid, key, (list) => [...list, { id: uid(), ...blank }]);
+    updP2(pid, { [key]: [...(phase2.find((p) => p.id === pid)?.[key] || []), { id: uid(), ...blank }] });
   const rmP2Sub = (pid, key, subId) =>
-    editP2Sub(pid, key, (list) => list.filter((x) => x.id !== subId));
+    updP2(pid, { [key]: (phase2.find((p) => p.id === pid)?.[key] || []).filter((x) => x.id !== subId) });
   const missingP2 = results.filter(
     (r) => r.phase2 && (r.team || "").trim() && !phase2.some((p) => p.team && p.team.toLowerCase() === r.team.toLowerCase())
   );
@@ -1186,17 +1198,9 @@ export default function App() {
      person, "Name  email" or "Name, program, email" — so Pascal maintains
      people in one place only. */
   const roster = profiles.flatMap((p) =>
-    String(p.members || "")
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line, li) => {
-        const em = line.match(/[\w.+-]+@[\w.-]+\.\w+/);
-        const email = em ? em[0] : "";
-        let name = line.replace(email, "").replace(/\s{2,}/g, " ").trim();
-        name = name.replace(/[\s,;:·|\-–]+$/, "").trim();
-        return { rowId: `${p.id}:${li}`, key: (email || name).toLowerCase(), name: name || email, email, team: p.name || "Untitled", profileId: p.id };
-      })
+    parseMembers(p.members).map((m, li) => ({
+      ...m, rowId: `${p.id}:${li}`, team: p.name || "Untitled", profileId: p.id,
+    }))
   );
   const attFor = (sid) => (attendance && attendance[sid]) || {};
   const setAtt = (sid, key, val) =>
@@ -1311,12 +1315,11 @@ export default function App() {
       { title: `Remove ${r.name} from ${r.team}?`, confirmLabel: "Remove", danger: true }))) return;
     setProfiles((ps) => ps.map((p) => {
       if (p.id !== r.profileId) return p;
+      /* Read each line the same way the roster does, so the person removed
+         here is exactly the person shown there. */
       const kept = String(p.members || "").split(/\r?\n/).filter((line) => {
-        const t = line.trim();
-        if (!t) return false;
-        const em = t.match(/[\w.+-]+@[\w.-]+\.\w+/);
-        const key = (em ? em[0] : t.replace(/[\s,;:·|\-–]+$/, "")).toLowerCase();
-        return key !== r.key;
+        const [m] = parseMembers(line);
+        return !!m && m.key !== r.key;
       });
       return { ...p, members: kept.join("\n") };
     }));
@@ -1327,6 +1330,124 @@ export default function App() {
       });
       return cur;
     });
+  };
+
+  /* ---- contact directory ----
+     Everyone named in this cycle's team profiles, and optionally everyone
+     from past cycles too. Past cycles are not in memory, so they are read
+     from storage on demand — together with each cycle's own call list, so a
+     past team is labelled with the call it actually applied to rather than
+     with whatever happens to share its id this year. */
+  const loadArchive = async () => {
+    if (archive || archiveBusy) return;
+    if (!supabase) { await ui.alert("Past cycles live in cloud storage, which isn't configured here."); setArchive([]); return; }
+    setArchiveBusy(true);
+    const past = cycles.filter((c) => c.id !== cycleId);
+    const out = [];
+    let failed = false;
+    for (const c of past) {
+      const [profRes, callRes] = await Promise.all([
+        supabase.from("app_state").select("data").eq("cycle", c.id).eq("section", "teamProfiles").maybeSingle(),
+        supabase.from("app_state").select("data").eq("cycle", c.id).eq("section", "calls").maybeSingle(),
+      ]);
+      if (profRes.error) { failed = true; continue; }
+      const pastCalls = callRes.data && Array.isArray(callRes.data.data) ? callRes.data.data : callList;
+      const rows = profRes.data && Array.isArray(profRes.data.data) ? profRes.data.data : [];
+      rows.forEach((pr) => out.push({ profile: pr, call: callFor(pr, pastCalls), cycle: c }));
+    }
+    setArchive(out);
+    setArchiveBusy(false);
+    if (failed) await ui.alert("Some past cycles couldn't be read. The list shows everything that loaded.");
+  };
+
+  /* The archive is read relative to the cycle being viewed: keeping it across
+     a cycle switch would list the newly-viewed cycle twice, once as current
+     and once as loaded. The call filter goes with it, since call ids are
+     per-cycle. */
+  useEffect(() => {
+    setArchive(null);
+    setProfileCallFilter("all");
+  }, [cycleId]);
+
+  const contactRows = useMemo(() => {
+    const rows = [];
+    profileRows.forEach((p) => parseMembers(p.members).forEach((m, i) => rows.push({
+      ...m, rowId: `now:${p.id}:${i}`, team: p.name || "Untitled team",
+      call: callFor(p, callList), cycleLabel: viewedCycle.label, current: true,
+    })));
+    (archive || []).forEach(({ profile, call, cycle }) => parseMembers(profile.members).forEach((m, i) => rows.push({
+      ...m, rowId: `past:${cycle.id}:${profile.id}:${i}`, team: profile.name || "Untitled team",
+      call, cycleLabel: cycle.label, current: false,
+      /* Usually every loaded cycle is a past one. It is only when a past
+         cycle is being viewed that one of them is the live cycle instead,
+         and saying so beats labelling the current cohort "past". */
+      note: cycle.status === "active" ? "current" : "past",
+    })));
+    return rows.sort((a, b) =>
+      (a.current === b.current ? 0 : a.current ? -1 : 1)
+      || (a.team || "").localeCompare(b.team || "")
+      || (a.name || "").localeCompare(b.name || ""));
+  }, [profileRows, archive, callList, viewedCycle]);
+
+  /* Past cycles keep their own call list, so a past row matches the filter by
+     call name as well as by id — "Cybersecurity 2025" and "Cybersecurity" are
+     separate rows in storage but the same call to whoever is reading. */
+  const callMatches = (call, filterId) => {
+    if (filterId === "all") return true;
+    if (call.id === filterId) return true;
+    const target = callList.find((c) => c.id === filterId);
+    return !!(target && call.name && String(call.name).toLowerCase() === String(target.name).toLowerCase());
+  };
+  /* Filter chips: every configured call, plus Unassigned when somebody's team
+     points at a call this cycle no longer has — otherwise those people would
+     be reachable only from "All calls" and the counts would not add up. */
+  const contactCalls = [
+    ...callList,
+    ...(contactRows.some((r) => r.call.id === UNASSIGNED)
+      ? [contactRows.find((r) => r.call.id === UNASSIGNED).call]
+      : []),
+  ];
+  const visibleContacts = contactRows.filter((r) => callMatches(r.call, profileCallFilter));
+  const contactEmails = [...new Set(visibleContacts.map((r) => r.email).filter(Boolean))];
+
+  const copyEmails = async () => {
+    if (!contactEmails.length) { await ui.alert("No email addresses in this view yet."); return; }
+    const list = contactEmails.join("; ");
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(list);
+      setCopiedAll(true);
+      setTimeout(() => setCopiedAll(false), 1800);
+    } else {
+      await ui.prompt("Copy these addresses", list, { title: `${contactEmails.length} addresses` });
+    }
+  };
+
+  const printContacts = async (rows) => {
+    if (!rows.length) { await ui.alert("No contacts to print."); return; }
+    /* Grouped by team within its cycle: two cycles can hold a team of the
+       same name, and merging them would invent a roster that never existed. */
+    const byTeam = new Map();
+    rows.forEach((r) => {
+      const key = `${r.cycleLabel}\u0000${r.team}`;
+      if (!byTeam.has(key)) byTeam.set(key, []);
+      byTeam.get(key).push(r);
+    });
+    /* Insertion order, not alphabetical: `rows` already arrives current cycle
+       first, then by team, so the sheet reads the way the screen does. */
+    const body = [...byTeam.keys()].map((key) => {
+      const people = byTeam.get(key);
+      const first = people[0];
+      const head = `<tr class="teamhead"><td colspan="3">${esc(first.team)} — ${esc(first.call.name)} call · ${esc(first.cycleLabel)}${first.current ? "" : ` (${esc(first.note)})`}</td></tr>`;
+      return head + people.map((r) =>
+        `<tr><td>${esc(r.name)}</td><td class="em">${esc(r.email || "—")}</td><td class="team">${esc(r.cycleLabel)}</td></tr>`
+      ).join("");
+    }).join("");
+    openPrint(
+      `<div class="head"><h1>Contact list</h1>
+       <div class="sub">GCS Student Innovation Fund · ${rows.length} contact${rows.length === 1 ? "" : "s"}${archive && archive.length ? " · includes other cycles" : ` · cycle ${esc(viewedCycle.label)}`}</div></div>
+       <table><thead><tr><th>Name</th><th>Email</th><th style="width:90px">Cycle</th></tr></thead><tbody>${body}</tbody></table>`,
+      `Contacts — ${viewedCycle.label}`
+    );
   };
 
   /* Removing a session also drops the attendance marked against it, which
@@ -1835,10 +1956,11 @@ export default function App() {
                     onChange={(patch) => updCall(c.id, patch)}
                     onUse={() => setActiveCall(c.id)}
                     onRemove={c.fixed ? null : async () => {
-                      const attached = teams.filter((t) => callFor(t, callList).id === c.id).length;
+                      const attached = teams.filter((t) => callFor(t, callList).id === c.id).length
+                        + profileRows.filter((p) => p.callId === c.id).length;
                       const ok = await ui.confirm(
                         attached
-                          ? `${attached} team${attached === 1 ? "" : "s"} applied to this call. They are kept, but move to an “Unassigned” group in Selection until you put them in another call.`
+                          ? `${attached} team${attached === 1 ? "" : "s"} sit under this call. They are kept, but move to an “Unassigned” group in Selection and Teams until you put them in another call.`
                           : "Class visits advertised under this call lose their tag.",
                         { title: `Remove the ${c.name} call?`, confirmLabel: "Remove", danger: true }
                       );
@@ -1846,6 +1968,7 @@ export default function App() {
                       setCallList((cs) => cs.filter((x) => x.id !== c.id));
                       if (activeCall === c.id) setActiveCall("regular");
                       if (callFilter === c.id) setCallFilter("all");
+                      if (profileCallFilter === c.id) setProfileCallFilter("all");
                     }} />
                 ))}
                 <AddCallCard draft={draft} setDraft={setDraft} palette={PALETTE}
@@ -2183,6 +2306,9 @@ export default function App() {
                         </span>
                       )}
                     </button>
+                    <button className={teamsTab === "contacts" ? "on" : ""} onClick={() => setTeamsTab("contacts")}>
+                      Contacts
+                    </button>
                   </div>
                   {teamsTab === "profiles" && (
                     <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }}
@@ -2193,7 +2319,95 @@ export default function App() {
                 </div>
               </div>
 
-              {teamsTab === "deliverables" ? (
+              {teamsTab === "contacts" ? (
+                <>
+                  {/* One directory of every person on file, so a mailing list
+                      never has to be rebuilt team by team. Past cycles are off
+                      by default — they are a separate read from storage — and
+                      are dimmed and marked when switched on. */}
+                  <div className="chiprow" style={{ marginTop: 18 }}>
+                    <button className={"chip chipx" + (profileCallFilter === "all" ? " on" : "")} onClick={() => setProfileCallFilter("all")}>
+                      <span className="lbl">All calls</span><span className="n">{contactRows.length}</span>
+                    </button>
+                    {contactCalls.map((c) => (
+                      <button key={c.id} title={c.topic}
+                        className={"chip chipx" + (profileCallFilter === c.id ? " on" : "")}
+                        style={profileCallFilter === c.id
+                          ? { background: c.accent, borderColor: c.accent, color: "#fff" }
+                          : { borderColor: c.accent, color: c.accent }}
+                        onClick={() => setProfileCallFilter(c.id)}>
+                        <span className="lbl">{c.name}{c.topic && c.id !== UNASSIGNED ? ` · ${c.topic}` : ""}</span>
+                        <span className="n">{contactRows.filter((r) => callMatches(r.call, c.id)).length}</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+                    <button className="mini" onClick={copyEmails} title="Copy every address in this view, ready to paste into a mail client">
+                      <Copy size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
+                      {copiedAll ? "Copied ✓" : `Copy ${contactEmails.length} email${contactEmails.length === 1 ? "" : "s"}`}
+                    </button>
+                    <a className="mini" style={{ textDecoration: "none", display: "inline-flex", alignItems: "center" }}
+                      href={`mailto:?bcc=${encodeURIComponent(contactEmails.join(","))}`}
+                      title="Open your mail app with everyone in BCC, so nobody sees anyone else's address">
+                      <Mail size={11} style={{ verticalAlign: -1, marginRight: 4 }} /> Email everyone (BCC)
+                    </a>
+                    <button className="mini" onClick={() => printContacts(visibleContacts)}>
+                      <Printer size={11} style={{ verticalAlign: -1, marginRight: 4 }} /> Print
+                    </button>
+                    {archive === null ? (
+                      <button className="mini" onClick={loadArchive} disabled={archiveBusy}
+                        title="Also read the team profiles stored for every past cycle">
+                        {archiveBusy ? "Loading past cycles…" : "+ Include past cycles"}
+                      </button>
+                    ) : (
+                      <button className="mini on" onClick={() => setArchive(null)} title="Show this cycle only">
+                        <Check size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
+                        Past cycles shown{archive.length ? "" : " · none found"}
+                      </button>
+                    )}
+                    <span className="mono" style={{ fontSize: 11.5, color: T.muted, marginLeft: "auto" }}>
+                      {visibleContacts.length} contact{visibleContacts.length === 1 ? "" : "s"}
+                    </span>
+                  </div>
+
+                  {visibleContacts.length === 0 ? (
+                    <div className="card" style={{ marginTop: 16, color: T.muted, fontSize: 13.5 }}>
+                      No contacts in this view. People come from the Members field on each team profile — one per line, name and email.
+                    </div>
+                  ) : (
+                    <div className="card" style={{ marginTop: 14 }}>
+                      <div style={{ overflowX: "auto" }}>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th scope="col">Name</th><th scope="col">Email</th>
+                              <th scope="col">Team</th><th scope="col">Call</th><th scope="col">Cycle</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {visibleContacts.map((r) => (
+                              <tr key={r.rowId} style={r.current ? undefined : { opacity: 0.62 }}>
+                                <td style={{ minWidth: 150, fontWeight: 600 }}>{r.name}</td>
+                                <td style={{ minWidth: 190 }}>
+                                  {r.email
+                                    ? <a className="mono" href={`mailto:${r.email}`} style={{ fontSize: 11.5, color: T.info }}>{r.email}</a>
+                                    : <span style={{ color: T.muted, fontSize: 12 }}>no email on file</span>}
+                                </td>
+                                <td style={{ fontSize: 12.5 }}>{r.team}</td>
+                                <td><Pill bg={T.surface} fg={r.call.accent}>{r.call.name}</Pill></td>
+                                <td className="mono" style={{ fontSize: 11, color: T.muted, whiteSpace: "nowrap" }}>
+                                  {r.cycleLabel}{r.current ? "" : ` · ${r.note}`}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : teamsTab === "deliverables" ? (
                 <>
                   {/* What are we waiting on? One list, worst first, so nothing
                       has to be hunted for team by team. */}
@@ -2229,7 +2443,7 @@ export default function App() {
                             <Check size={11} style={{ verticalAlign: -1, marginRight: 3 }} />Mark submitted
                           </button>
                           <button className="mini" title="Open this team's profile"
-                            onClick={() => { setActiveProfileId(d.profileId); setTeamsTab("profiles"); }}>Open team</button>
+                            onClick={() => { setActiveProfileId(d.profileId); setProfileCallFilter("all"); setTeamsTab("profiles"); }}>Open team</button>
                         </div>
                       </div>
                     ))}
@@ -2256,7 +2470,7 @@ export default function App() {
                                     ? <Pill bg={worst.bg} fg={worst.fg}>{worst.label}</Pill>
                                     : <Pill bg={T.okTint} fg={T.ok}><Check size={12} /> All in</Pill>}</td>
                                   <td>
-                                    <button className="mini" onClick={() => { setActiveProfileId(p.id); setTeamsTab("profiles"); }}>Open</button>
+                                    <button className="mini" onClick={() => { setActiveProfileId(p.id); setProfileCallFilter("all"); setTeamsTab("profiles"); }}>Open</button>
                                   </td>
                                 </tr>
                               );
@@ -2284,29 +2498,81 @@ export default function App() {
                     </div>
                   ) : (
                     <>
+                      {/* Teams are read one call at a time, the same way the
+                          Selection pipeline is, so a themed call's teams never
+                          sit in an undifferentiated list with the Regular ones. */}
+                      <div className="chiprow" style={{ marginTop: 18 }}>
+                        <button className={"chip chipx" + (profileCallFilter === "all" ? " on" : "")} onClick={() => setProfileCallFilter("all")}>
+                          <span className="lbl">All calls</span><span className="n">{profiles.length}</span>
+                        </button>
+                        {profileGroups.map(({ call, teams: ps }) => (
+                          <button key={call.id} title={call.topic}
+                            className={"chip chipx" + (profileCallFilter === call.id ? " on" : "")}
+                            style={profileCallFilter === call.id
+                              ? { background: call.accent, borderColor: call.accent, color: "#fff" }
+                              : { borderColor: call.accent, color: call.accent }}
+                            onClick={() => setProfileCallFilter(call.id)}>
+                            <span className="lbl">{call.name}{call.topic && call.id !== UNASSIGNED ? ` · ${call.topic}` : ""}</span>
+                            <span className="n">{ps.length}</span>
+                          </button>
+                        ))}
+                      </div>
+
                       {/* A team chip carries its worst outstanding deliverable, so
                           the teams to chase are visible without opening each one. */}
-                      <div className="chiprow" style={{ marginTop: 18 }}>
-                        {[...profiles].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => {
-                          const worst = profileDeliverableState(p);
-                          const on = activeProfile && activeProfile.id === p.id;
-                          return (
-                            <button key={p.id} title={worst ? `${p.name || "Untitled"} — ${worst.label}` : p.name || "Untitled"}
-                              className={"chip" + (on ? " on" : "")} onClick={() => setActiveProfileId(p.id)}
-                              style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
-                              {worst && <span style={{ width: 7, height: 7, borderRadius: 999, background: worst.fg, flex: "0 0 7px" }} />}
-                              {p.name || "Untitled"}
-                            </button>
-                          );
-                        })}
-                      </div>
+                      {visibleProfiles.length === 0 ? (
+                        <div className="card" style={{ marginTop: 14, color: T.muted, fontSize: 13.5 }}>
+                          No teams in this call yet. Open a team from another call and change its call, or add one.
+                        </div>
+                      ) : shownProfileGroups.map(({ call, teams: groupProfiles }) => {
+                        if (!groupProfiles.length) return null;
+                        return (
+                          <div key={call.id} style={{ marginTop: 14 }}>
+                            <div className="eyebrow" style={{ marginBottom: 7, color: call.accent }}>
+                              {call.id === UNASSIGNED ? "Unassigned" : `${call.name} call`} · {groupProfiles.length} team{groupProfiles.length === 1 ? "" : "s"}
+                            </div>
+                            <div className="chiprow">
+                              {[...groupProfiles].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => {
+                                const worst = profileDeliverableState(p);
+                                const on = activeProfile && activeProfile.id === p.id;
+                                return (
+                                  <button key={p.id} title={worst ? `${p.name || "Untitled"} — ${worst.label}` : p.name || "Untitled"}
+                                    className={"chip" + (on ? " on" : "")} onClick={() => setActiveProfileId(p.id)}
+                                    style={on
+                                      ? { display: "inline-flex", alignItems: "center", gap: 7, background: call.accent, borderColor: call.accent }
+                                      : { display: "inline-flex", alignItems: "center", gap: 7, borderLeft: `3px solid ${call.accent}` }}>
+                                    {worst && <span style={{ width: 7, height: 7, borderRadius: 999, background: on ? "#fff" : worst.fg, flex: "0 0 7px" }} />}
+                                    {p.name || "Untitled"}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
 
                       {activeProfile && (
                         <div className="grid resp" style={{ gridTemplateColumns: "1fr 1.3fr", marginTop: 14 }}>
                           <div className="card">
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
                               <div className="eyebrow">Profile</div>
-                              <IconBtn title="Remove profile" onClick={() => rmProfile(activeProfile.id)}><Trash2 size={14} /></IconBtn>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                                {/* Which call this team came from — the same list
+                                    Selection uses, so the two screens agree. */}
+                                <select
+                                  value={profileCall(activeProfile).id}
+                                  aria-label={`Call for ${activeProfile.name || "this team"}`}
+                                  title="Which call this team applied to — changing it moves the team to that group"
+                                  onChange={(e) => setProfileCall(activeProfile.id, e.target.value)}
+                                  style={{ fontFamily: "IBM Plex Mono", fontSize: 11.5, padding: "5px 7px", borderRadius: 8, background: T.surface, maxWidth: 210,
+                                           border: `1px solid ${profileCall(activeProfile).accent}`, color: profileCall(activeProfile).accent, fontWeight: 600 }}>
+                                  {callList.map((c) => (
+                                    <option key={c.id} value={c.id}>{c.name}{c.topic ? ` — ${c.topic}` : ""}</option>
+                                  ))}
+                                  {profileCall(activeProfile).id === UNASSIGNED && <option value={UNASSIGNED}>Unassigned</option>}
+                                </select>
+                                <IconBtn title="Remove profile" onClick={() => rmProfile(activeProfile.id)}><Trash2 size={14} /></IconBtn>
+                              </div>
                             </div>
                             <EInput value={activeProfile.name} onChange={(v) => updProfile(activeProfile.id, { name: v })} placeholder="Team name" />
                             <div className="eyebrow" style={{ margin: "12px 0 3px" }}>Members</div>
@@ -2600,9 +2866,13 @@ export default function App() {
                                 {r.phase2 ? "Phase 2" : "—"}
                               </button>
                             </td>
-                            <td style={{ minWidth: 110 }}>
-                              <MoneyInput value={r.amount} ariaLabel={`Phase 2 amount for ${r.team || "this team"}`} max={50000} w="72px"
-                                onChange={(v) => updResult(r.id, { amount: v })} />
+                            <td style={{ minWidth: 96 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                                <span className="mono" style={{ color: T.muted, fontSize: 12 }}>$</span>
+                                <EInput value={r.amount} onChange={(v) => updResult(r.id, { amount: money(v) })} placeholder="0" mono w="70px"
+                                  ariaLabel={`Phase II amount for ${r.team || "this team"}`}
+                                  title={Number(r.amount) > MAX_AWARD ? `Above the $${MAX_AWARD.toLocaleString()}/yr maximum` : undefined} />
+                              </div>
                             </td>
                             <td style={{ minWidth: 200 }}><NoteField value={r.note} onChange={(v) => updResult(r.id, { note: v })} placeholder="Traction note" minRows={1} style={{ fontSize: 12.5 }} /></td>
                             <td><button onClick={() => rmResult(r.id)} title="Remove" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button></td>
@@ -3034,9 +3304,7 @@ export default function App() {
                       return (
                         <button key={p.id} title={p.team || "Untitled"} className={"chip" + (activeP2 && activeP2.id === p.id ? " on" : "")} onClick={() => setActiveP2Id(p.id)} style={{ maxWidth: 260 }}>
                           {p.team || "Untitled"}
-                          <span className="mono" style={{ fontSize: 10, marginLeft: 6,
-                            color: activeP2 && activeP2.id === p.id ? "#fff" : full ? T.ok : T.muted,
-                            opacity: activeP2 && activeP2.id === p.id ? 0.85 : 1 }}>
+                          <span className="mono" style={{ fontSize: 10, marginLeft: 6, color: full ? T.ok : T.muted }}>
                             {full ? "paid" : `$${paid.toLocaleString()}/${Number(p.awarded) ? "$" + Number(p.awarded).toLocaleString() : "—"}`}
                           </span>
                         </button>
@@ -3046,12 +3314,11 @@ export default function App() {
 
                   {activeP2 && (() => {
                     const paid = p2Paid(activeP2);
+                    const payN = (activeP2.payments || []).length;
+                    const blankPays = (activeP2.payments || []).filter((x) => !(Number(x.amount) > 0)).length;
                     const awarded = Number(activeP2.awarded) || 0;
                     const pct = awarded ? Math.min(Math.round((paid / awarded) * 100), 100) : 0;
                     const remaining = Math.max(awarded - paid, 0);
-                    /* Paying out more than was awarded was previously invisible:
-                       the bar capped at 100% and "remaining" floored at zero. */
-                    const over = Math.max(paid - awarded, 0);
                     return (
                       <div className="grid resp" style={{ gridTemplateColumns: "1fr 1.25fr", marginTop: 14 }}>
                         <div className="card">
@@ -3072,30 +3339,36 @@ export default function App() {
                             </div>
                           </div>
                           <div className="eyebrow" style={{ margin: "12px 0 3px" }}>Award ($/yr)</div>
-                          <MoneyInput value={activeP2.awarded} ariaLabel="Annual award" max={50000}
-                            onChange={(v) => updP2(activeP2.id, { awarded: v })} />
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                            <span className="moneyfield">
+                              <span className="cur">$</span>
+                              <EInput value={activeP2.awarded} onChange={(v) => updP2(activeP2.id, { awarded: money(v) })} placeholder="0" mono w="86px" ariaLabel="Award amount" />
+                            </span>
+                            {awarded > MAX_AWARD && (
+                              <span style={{ fontSize: 11.5, color: T.warnInk }}>
+                                above the ${MAX_AWARD.toLocaleString()}/yr maximum
+                              </span>
+                            )}
+                          </div>
                           <div style={{ marginTop: 14 }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                               <span className="eyebrow">Disbursed</span>
-                              <span className="mono" style={{ fontSize: 12.5, color: over > 0 ? T.danger : remaining === 0 && awarded > 0 ? T.ok : T.ink }}>
+                              <span className="mono" style={{ fontSize: 12.5, color: remaining === 0 && awarded > 0 ? T.ok : T.ink }}>
                                 ${paid.toLocaleString()}{awarded ? ` of $${awarded.toLocaleString()}` : ""}
                               </span>
                             </div>
-                            <div className="track" style={{ marginTop: 7 }}>
-                              <div style={{ width: pct + "%", background: over > 0 ? T.danger : remaining === 0 && awarded > 0 ? T.ok : accent }} />
+                            <div className="track" style={{ marginTop: 7 }}><div style={{ width: pct + "%", background: remaining === 0 && awarded > 0 ? T.ok : accent }} /></div>
+                            {/* This figure is the payment ledger's total, never typed
+                                directly — saying so beats leaving someone clicking
+                                at a number that will not take an edit. */}
+                            <div style={{ color: blankPays ? T.warnInk : T.muted, fontSize: 11.5, marginTop: 5 }}>
+                              {awarded > 0 && (remaining > 0 ? `$${remaining.toLocaleString()} remaining · ` : "Fully disbursed · ")}
+                              {!payN
+                                ? "no payments recorded yet — add one in the ledger to move this"
+                                : blankPays
+                                  ? `${blankPays} of ${payN} payment${payN === 1 ? "" : "s"} has no amount — type it in the $ box, not the note`
+                                  : `total of ${payN} payment${payN === 1 ? "" : "s"} — change it in the ledger`}
                             </div>
-                            {awarded > 0 && (
-                              <div style={{ fontSize: 11.5, marginTop: 5, color: over > 0 ? T.danger : T.muted }}>
-                                {over > 0
-                                  ? `$${over.toLocaleString()} over the award — check the payment records`
-                                  : remaining > 0 ? `$${remaining.toLocaleString()} remaining` : "Fully disbursed"}
-                              </div>
-                            )}
-                            {awarded === 0 && paid > 0 && (
-                              <div style={{ fontSize: 11.5, marginTop: 5, color: T.warnInk }}>
-                                No award set — set one above to track what is left.
-                              </div>
-                            )}
                           </div>
                           <div className="eyebrow" style={{ margin: "12px 0 3px" }}>Note</div>
                           <NoteField value={activeP2.note} onChange={(v) => updP2(activeP2.id, { note: v })}
@@ -3108,48 +3381,22 @@ export default function App() {
                               <div className="eyebrow">Payments · {(activeP2.payments || []).length}</div>
                               <button className="mini" onClick={() => addP2Sub(activeP2.id, "payments", { date: todayISO(), amount: "", note: "" })}><Plus size={11} style={{ verticalAlign: -1 }} /> Payment</button>
                             </div>
-                            {(activeP2.payments || []).length === 0 ? (
-                              <div style={{ color: T.muted, fontSize: 12.5 }}>No payments recorded yet.</div>
-                            ) : (
-                              <div className="subhead">
-                                <span className="eyebrow" style={{ flex: "0 0 126px" }}>Date</span>
-                                <span className="eyebrow" style={{ flex: "0 0 92px" }}>Amount</span>
-                                <span className="eyebrow" style={{ flex: 1 }}>Note</span>
-                                <span style={{ flex: "0 0 19px" }} />
-                              </div>
-                            )}
-                            {(activeP2.payments || []).map((pay) => {
-                              /* An amount typed into the note before the field was
-                                 drawn as a box: offer to move it rather than making
-                                 someone retype it. */
-                              const strayAmount = (pay.amount === "" || pay.amount == null) && /^\s*\$?\s*[\d,]+\s*$/.test(String(pay.note || ""))
-                                ? Number(String(pay.note).replace(/[^\d]/g, ""))
-                                : null;
-                              return (
-                                <div key={pay.id} style={{ padding: "9px 0", borderBottom: `1px solid ${T.hairline}` }}>
-                                  <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-                                    <div style={{ flex: "0 0 auto", paddingTop: 1 }}>
-                                      <DateField value={pay.date} onChange={(v) => updP2Sub(activeP2.id, "payments", pay.id, { date: v })} w="126px" title="Payment date" />
-                                    </div>
-                                    <MoneyInput value={pay.amount} ariaLabel="Payment amount"
-                                      onChange={(v) => updP2Sub(activeP2.id, "payments", pay.id, { amount: v })} />
-                                    <NoteField value={pay.note} onChange={(v) => updP2Sub(activeP2.id, "payments", pay.id, { note: v })} placeholder="Tranche or milestone" minRows={1} />
-                                    <IconBtn title="Remove payment" style={{ marginTop: 4 }} onClick={() => rmP2Sub(activeP2.id, "payments", pay.id)}><Trash2 size={13} /></IconBtn>
-                                  </div>
-                                  {strayAmount > 0 && (
-                                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 7, paddingLeft: 134 }}>
-                                      <span style={{ fontSize: 12, color: T.warnInk }}>
-                                        This note looks like an amount — it isn't counted in the total.
-                                      </span>
-                                      <button className="mini" style={{ borderColor: T.warn, color: T.warnInk }}
-                                        onClick={() => updP2Sub(activeP2.id, "payments", pay.id, { amount: strayAmount, note: "" })}>
-                                        Move ${strayAmount.toLocaleString()} to Amount
-                                      </button>
-                                    </div>
-                                  )}
+                            {(activeP2.payments || []).length === 0 && <div style={{ color: T.muted, fontSize: 12.5 }}>No payments recorded yet.</div>}
+                            {(activeP2.payments || []).map((pay) => (
+                              <div key={pay.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "9px 0", borderBottom: `1px solid ${T.hairline}` }}>
+                                <div style={{ flex: "0 0 auto", paddingTop: 1 }}>
+                                  <DateField value={pay.date} onChange={(v) => updP2Sub(activeP2.id, "payments", pay.id, { date: v })} w="126px" title="Payment date" />
                                 </div>
-                              );
-                            })}
+                                <span className={"moneyfield" + (Number(pay.amount) > 0 ? "" : " empty")}
+                                  title={Number(pay.amount) > 0 ? "Payment amount" : "How much was paid — without it this payment adds nothing to the disbursed total"}>
+                                  <span className="cur">$</span>
+                                  <EInput value={pay.amount} onChange={(v) => updP2Sub(activeP2.id, "payments", pay.id, { amount: money(v) })}
+                                    placeholder="Amount" mono w="76px" ariaLabel="Payment amount" />
+                                </span>
+                                <NoteField value={pay.note} onChange={(v) => updP2Sub(activeP2.id, "payments", pay.id, { note: v })} placeholder="What it covers — tranche, milestone, conditions" minRows={1} />
+                                <IconBtn title="Remove payment" style={{ marginTop: 4 }} onClick={() => rmP2Sub(activeP2.id, "payments", pay.id)}><Trash2 size={13} /></IconBtn>
+                              </div>
+                            ))}
                           </div>
 
                           <div className="card">
