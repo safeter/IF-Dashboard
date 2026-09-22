@@ -173,6 +173,15 @@ tr:last-child td{border-bottom:none}
 .datefield{padding:5px 8px;border:1px solid ${T.hairline};border-radius:8px;font-size:12px;
   background:${T.surface};color:${T.ink};font-family:'IBM Plex Mono',monospace}
 .datefield:focus{outline:none;border-color:var(--accent)}
+.money{display:inline-flex;align-items:center;border:1px solid ${T.hairline};border-radius:8px;
+  background:${T.surface};flex:0 0 auto;padding-right:9px}
+.money:focus-within{border-color:var(--accent);box-shadow:0 0 0 2px ${T.hairline}}
+.money .cur{padding:0 3px 0 9px;color:${T.muted};font-family:'IBM Plex Mono',monospace;font-size:12.5px}
+.money input{border:none;outline:none;background:transparent;color:${T.ink};text-align:right;
+  font-size:13px;padding:6px 0}
+.money input::placeholder{color:#C4BEB7}
+/* Column captions for the payment rows — three fields, one of them money. */
+.subhead{display:flex;align-items:center;gap:8px;padding:2px 0 4px}
 
 /* call grouping — a themed band per call so two calls never read as one list */
 .callband{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:11px 14px;
@@ -483,6 +492,33 @@ const EInput = ({ value, onChange, placeholder, w, mono, align, title, ariaLabel
     className={"einput" + (mono ? " mono" : "")}
     style={{ width: w || "100%", textAlign: align || "left" }}
   />
+);
+
+/**
+ * A money field, drawn as a box.
+ *
+ * Every other inline field in the app is borderless until hovered, which works
+ * where a column of them sits under a header. It fails badly for an amount on
+ * a row of its own: an empty one renders as the grey text "0" next to a "$",
+ * reading as a label rather than somewhere to type — so the amount gets typed
+ * into whichever neighbouring field does look like an input.
+ */
+const MoneyInput = ({ value, onChange, w = "92px", ariaLabel, max = 999999 }) => (
+  <span className="money">
+    <span className="cur">$</span>
+    <input
+      className="mono"
+      value={value ?? ""}
+      aria-label={ariaLabel}
+      inputMode="numeric"
+      placeholder="0"
+      onChange={(e) => {
+        const digits = e.target.value.replace(/\D/g, "").slice(0, String(max).length);
+        onChange(digits === "" ? "" : Math.min(Number(digits), max));
+      }}
+      style={{ width: w }}
+    />
+  </span>
 );
 
 /* Icon-only control. Every one carries a label so the screen is navigable
@@ -1005,12 +1041,19 @@ export default function App() {
     setProfiles((ps) => ps.filter((x) => x.id !== id));
     if (activeProfileId === id) setActiveProfileId(null);
   };
+  /* Meetings and deliverables are edited through the parent profile. These
+     read the list out of the updater's own `prev` rather than the `profiles`
+     captured at render time — two edits landing in one batch would otherwise
+     both build on the same stale list, and the second would silently discard
+     the first. */
+  const editSub = (pid, key, fn) =>
+    setProfiles((ps) => ps.map((p) => (p.id === pid ? { ...p, [key]: fn(p[key] || []) } : p)));
   const updSub = (pid, key, subId, patch) =>
-    updProfile(pid, { [key]: (profiles.find((p) => p.id === pid)?.[key] || []).map((x) => (x.id === subId ? { ...x, ...patch } : x)) });
+    editSub(pid, key, (list) => list.map((x) => (x.id === subId ? { ...x, ...patch } : x)));
   const addSub = (pid, key, blank) =>
-    updProfile(pid, { [key]: [...(profiles.find((p) => p.id === pid)?.[key] || []), { id: uid(), ...blank }] });
+    editSub(pid, key, (list) => [...list, { id: uid(), ...blank }]);
   const rmSub = (pid, key, subId) =>
-    updProfile(pid, { [key]: (profiles.find((p) => p.id === pid)?.[key] || []).filter((x) => x.id !== subId) });
+    editSub(pid, key, (list) => list.filter((x) => x.id !== subId));
 
   /* ---- knowledge base ---- */
   const updKb = (id, patch) => setKb((ks) => ks.map((k) => (k.id === id ? { ...k, ...patch } : k)));
@@ -1094,12 +1137,16 @@ export default function App() {
     setPhase2((ps) => ps.filter((x) => x.id !== id));
     if (activeP2Id === id) setActiveP2Id(null);
   };
+  /* Same reasoning as editSub above: build on the updater's own previous
+     state so concurrent edits to payments and meetings cannot clobber. */
+  const editP2Sub = (pid, key, fn) =>
+    setPhase2((ps) => ps.map((p) => (p.id === pid ? { ...p, [key]: fn(p[key] || []) } : p)));
   const updP2Sub = (pid, key, subId, patch) =>
-    updP2(pid, { [key]: (phase2.find((p) => p.id === pid)?.[key] || []).map((x) => (x.id === subId ? { ...x, ...patch } : x)) });
+    editP2Sub(pid, key, (list) => list.map((x) => (x.id === subId ? { ...x, ...patch } : x)));
   const addP2Sub = (pid, key, blank) =>
-    updP2(pid, { [key]: [...(phase2.find((p) => p.id === pid)?.[key] || []), { id: uid(), ...blank }] });
+    editP2Sub(pid, key, (list) => [...list, { id: uid(), ...blank }]);
   const rmP2Sub = (pid, key, subId) =>
-    updP2(pid, { [key]: (phase2.find((p) => p.id === pid)?.[key] || []).filter((x) => x.id !== subId) });
+    editP2Sub(pid, key, (list) => list.filter((x) => x.id !== subId));
   const missingP2 = results.filter(
     (r) => r.phase2 && (r.team || "").trim() && !phase2.some((p) => p.team && p.team.toLowerCase() === r.team.toLowerCase())
   );
@@ -2553,11 +2600,9 @@ export default function App() {
                                 {r.phase2 ? "Phase 2" : "—"}
                               </button>
                             </td>
-                            <td style={{ minWidth: 96 }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
-                                <span className="mono" style={{ color: T.muted, fontSize: 12 }}>$</span>
-                                <EInput value={r.amount} onChange={(v) => { const n = v.replace(/\D/g, "").slice(0, 5); updResult(r.id, { amount: n === "" ? "" : Math.min(Number(n), 50000) }); }} placeholder="0" mono w="70px" />
-                              </div>
+                            <td style={{ minWidth: 110 }}>
+                              <MoneyInput value={r.amount} ariaLabel={`Phase 2 amount for ${r.team || "this team"}`} max={50000} w="72px"
+                                onChange={(v) => updResult(r.id, { amount: v })} />
                             </td>
                             <td style={{ minWidth: 200 }}><NoteField value={r.note} onChange={(v) => updResult(r.id, { note: v })} placeholder="Traction note" minRows={1} style={{ fontSize: 12.5 }} /></td>
                             <td><button onClick={() => rmResult(r.id)} title="Remove" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button></td>
@@ -2989,7 +3034,9 @@ export default function App() {
                       return (
                         <button key={p.id} title={p.team || "Untitled"} className={"chip" + (activeP2 && activeP2.id === p.id ? " on" : "")} onClick={() => setActiveP2Id(p.id)} style={{ maxWidth: 260 }}>
                           {p.team || "Untitled"}
-                          <span className="mono" style={{ fontSize: 10, marginLeft: 6, color: full ? T.ok : T.muted }}>
+                          <span className="mono" style={{ fontSize: 10, marginLeft: 6,
+                            color: activeP2 && activeP2.id === p.id ? "#fff" : full ? T.ok : T.muted,
+                            opacity: activeP2 && activeP2.id === p.id ? 0.85 : 1 }}>
                             {full ? "paid" : `$${paid.toLocaleString()}/${Number(p.awarded) ? "$" + Number(p.awarded).toLocaleString() : "—"}`}
                           </span>
                         </button>
@@ -3002,6 +3049,9 @@ export default function App() {
                     const awarded = Number(activeP2.awarded) || 0;
                     const pct = awarded ? Math.min(Math.round((paid / awarded) * 100), 100) : 0;
                     const remaining = Math.max(awarded - paid, 0);
+                    /* Paying out more than was awarded was previously invisible:
+                       the bar capped at 100% and "remaining" floored at zero. */
+                    const over = Math.max(paid - awarded, 0);
                     return (
                       <div className="grid resp" style={{ gridTemplateColumns: "1fr 1.25fr", marginTop: 14 }}>
                         <div className="card">
@@ -3022,19 +3072,30 @@ export default function App() {
                             </div>
                           </div>
                           <div className="eyebrow" style={{ margin: "12px 0 3px" }}>Award ($/yr)</div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                            <span className="mono" style={{ color: T.muted }}>$</span>
-                            <EInput value={activeP2.awarded} onChange={(v) => { const n = v.replace(/\D/g, "").slice(0, 6); updP2(activeP2.id, { awarded: n === "" ? "" : Math.min(Number(n), 50000) }); }} placeholder="0" mono w="90px" />
-                          </div>
+                          <MoneyInput value={activeP2.awarded} ariaLabel="Annual award" max={50000}
+                            onChange={(v) => updP2(activeP2.id, { awarded: v })} />
                           <div style={{ marginTop: 14 }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
                               <span className="eyebrow">Disbursed</span>
-                              <span className="mono" style={{ fontSize: 12.5, color: remaining === 0 && awarded > 0 ? T.ok : T.ink }}>
+                              <span className="mono" style={{ fontSize: 12.5, color: over > 0 ? T.danger : remaining === 0 && awarded > 0 ? T.ok : T.ink }}>
                                 ${paid.toLocaleString()}{awarded ? ` of $${awarded.toLocaleString()}` : ""}
                               </span>
                             </div>
-                            <div className="track" style={{ marginTop: 7 }}><div style={{ width: pct + "%", background: remaining === 0 && awarded > 0 ? T.ok : accent }} /></div>
-                            {awarded > 0 && <div style={{ color: T.muted, fontSize: 11.5, marginTop: 5 }}>{remaining > 0 ? `$${remaining.toLocaleString()} remaining` : "Fully disbursed"}</div>}
+                            <div className="track" style={{ marginTop: 7 }}>
+                              <div style={{ width: pct + "%", background: over > 0 ? T.danger : remaining === 0 && awarded > 0 ? T.ok : accent }} />
+                            </div>
+                            {awarded > 0 && (
+                              <div style={{ fontSize: 11.5, marginTop: 5, color: over > 0 ? T.danger : T.muted }}>
+                                {over > 0
+                                  ? `$${over.toLocaleString()} over the award — check the payment records`
+                                  : remaining > 0 ? `$${remaining.toLocaleString()} remaining` : "Fully disbursed"}
+                              </div>
+                            )}
+                            {awarded === 0 && paid > 0 && (
+                              <div style={{ fontSize: 11.5, marginTop: 5, color: T.warnInk }}>
+                                No award set — set one above to track what is left.
+                              </div>
+                            )}
                           </div>
                           <div className="eyebrow" style={{ margin: "12px 0 3px" }}>Note</div>
                           <NoteField value={activeP2.note} onChange={(v) => updP2(activeP2.id, { note: v })}
@@ -3047,18 +3108,48 @@ export default function App() {
                               <div className="eyebrow">Payments · {(activeP2.payments || []).length}</div>
                               <button className="mini" onClick={() => addP2Sub(activeP2.id, "payments", { date: todayISO(), amount: "", note: "" })}><Plus size={11} style={{ verticalAlign: -1 }} /> Payment</button>
                             </div>
-                            {(activeP2.payments || []).length === 0 && <div style={{ color: T.muted, fontSize: 12.5 }}>No payments recorded yet.</div>}
-                            {(activeP2.payments || []).map((pay) => (
-                              <div key={pay.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "9px 0", borderBottom: `1px solid ${T.hairline}` }}>
-                                <div style={{ flex: "0 0 auto", paddingTop: 1 }}>
-                                  <DateField value={pay.date} onChange={(v) => updP2Sub(activeP2.id, "payments", pay.id, { date: v })} w="126px" title="Payment date" />
-                                </div>
-                                <span className="mono" style={{ color: T.muted, fontSize: 12, paddingTop: 7 }}>$</span>
-                                <EInput value={pay.amount} onChange={(v) => { const val = v.replace(/\D/g, "").slice(0, 6); updP2Sub(activeP2.id, "payments", pay.id, { amount: val === "" ? "" : Number(val) }); }} placeholder="0" mono w="70px" ariaLabel="Payment amount" />
-                                <NoteField value={pay.note} onChange={(v) => updP2Sub(activeP2.id, "payments", pay.id, { note: v })} placeholder="Tranche / milestone — and any conditions attached" minRows={1} />
-                                <IconBtn title="Remove payment" style={{ marginTop: 4 }} onClick={() => rmP2Sub(activeP2.id, "payments", pay.id)}><Trash2 size={13} /></IconBtn>
+                            {(activeP2.payments || []).length === 0 ? (
+                              <div style={{ color: T.muted, fontSize: 12.5 }}>No payments recorded yet.</div>
+                            ) : (
+                              <div className="subhead">
+                                <span className="eyebrow" style={{ flex: "0 0 126px" }}>Date</span>
+                                <span className="eyebrow" style={{ flex: "0 0 92px" }}>Amount</span>
+                                <span className="eyebrow" style={{ flex: 1 }}>Note</span>
+                                <span style={{ flex: "0 0 19px" }} />
                               </div>
-                            ))}
+                            )}
+                            {(activeP2.payments || []).map((pay) => {
+                              /* An amount typed into the note before the field was
+                                 drawn as a box: offer to move it rather than making
+                                 someone retype it. */
+                              const strayAmount = (pay.amount === "" || pay.amount == null) && /^\s*\$?\s*[\d,]+\s*$/.test(String(pay.note || ""))
+                                ? Number(String(pay.note).replace(/[^\d]/g, ""))
+                                : null;
+                              return (
+                                <div key={pay.id} style={{ padding: "9px 0", borderBottom: `1px solid ${T.hairline}` }}>
+                                  <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                                    <div style={{ flex: "0 0 auto", paddingTop: 1 }}>
+                                      <DateField value={pay.date} onChange={(v) => updP2Sub(activeP2.id, "payments", pay.id, { date: v })} w="126px" title="Payment date" />
+                                    </div>
+                                    <MoneyInput value={pay.amount} ariaLabel="Payment amount"
+                                      onChange={(v) => updP2Sub(activeP2.id, "payments", pay.id, { amount: v })} />
+                                    <NoteField value={pay.note} onChange={(v) => updP2Sub(activeP2.id, "payments", pay.id, { note: v })} placeholder="Tranche or milestone" minRows={1} />
+                                    <IconBtn title="Remove payment" style={{ marginTop: 4 }} onClick={() => rmP2Sub(activeP2.id, "payments", pay.id)}><Trash2 size={13} /></IconBtn>
+                                  </div>
+                                  {strayAmount > 0 && (
+                                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 7, paddingLeft: 134 }}>
+                                      <span style={{ fontSize: 12, color: T.warnInk }}>
+                                        This note looks like an amount — it isn't counted in the total.
+                                      </span>
+                                      <button className="mini" style={{ borderColor: T.warn, color: T.warnInk }}
+                                        onClick={() => updP2Sub(activeP2.id, "payments", pay.id, { amount: strayAmount, note: "" })}>
+                                        Move ${strayAmount.toLocaleString()} to Amount
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
 
                           <div className="card">
