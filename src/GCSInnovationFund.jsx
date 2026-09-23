@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import {
@@ -7,6 +7,11 @@ import {
 } from "./lib/cloud";
 import { supabase } from "./lib/supabase";
 import { T, PALETTE } from "./lib/theme";
+/* Every web font names a fallback. Without one, a blocked or slow Google Fonts
+   request drops the stat figures, the wheel and every table header into the
+   browser default — Times New Roman. */
+const MONO = "'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+const DISP = "'Schibsted Grotesk', Inter, system-ui, -apple-system, 'Segoe UI', sans-serif";
 import { ui, DialogHost, NoteField, DateField, todayISO, fmtDate, safeUrl, linkHost } from "./lib/ui";
 import {
   callFor, callGroups, matchCall, legacyCallId, UNASSIGNED,
@@ -36,9 +41,9 @@ const STYLE = `
   background:${T.paper};min-height:100vh;display:flex;line-height:1.45;-webkit-font-smoothing:antialiased}
 .gcs button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
 .gcs :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
-.disp{font-family:'Schibsted Grotesk',system-ui,sans-serif;letter-spacing:-.02em}
-.mono{font-family:'IBM Plex Mono',monospace}
-.eyebrow{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;
+.disp{font-family:'Schibsted Grotesk', Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;letter-spacing:-.02em}
+.mono{font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+.eyebrow{font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:11px;letter-spacing:.14em;
   text-transform:uppercase;color:${T.muted}}
 
 /* shell */
@@ -53,14 +58,12 @@ const STYLE = `
 .navitem.on{background:var(--accent);color:#fff}
 .navitem.on svg{color:#fff}
 .main{flex:1;min-width:0;display:flex;flex-direction:column;position:relative}
-.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;
-  padding:18px 34px;border-bottom:1px solid ${T.hairline};background:${T.paper};
-  position:sticky;top:0;z-index:5}
+/* The top bar carries state, not a title: which cycle is open and whether the
+   work is saved. The page's own heading names the page, once. */
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:12px 34px;border-bottom:1px solid ${T.hairline};background:${T.paper};
+  position:sticky;top:0;z-index:5;min-height:52px}
 .content{padding:30px 34px 60px;max-width:1160px;width:100%}
-.skin{display:inline-flex;background:${T.surface};border:1px solid ${T.hairline};
-  border-radius:999px;padding:3px}
-.skin button{padding:6px 14px;border-radius:999px;font-size:12.5px;font-weight:600;color:${T.muted}}
-.skin button.on{color:#fff}
 
 /* primitives */
 .card{background:${T.surface};border:1px solid ${T.hairline};border-radius:18px;padding:20px}
@@ -68,21 +71,24 @@ const STYLE = `
 .sub{color:${T.muted};font-size:14px;margin-top:3px}
 .grid{display:grid;gap:16px}
 .pill{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;
-  padding:3px 9px;border-radius:999px;font-family:'IBM Plex Mono',monospace}
+  padding:3px 9px;border-radius:999px;font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
 .btn{display:inline-flex;align-items:center;gap:7px;background:var(--accent);color:#fff;
   font-weight:600;font-size:13px;padding:8px 14px;border-radius:999px;transition:.12s}
 .btn:hover{filter:brightness(.93)}
 .btn.ghost{background:transparent;color:${T.ink};border:1px solid ${T.hairline}}
 .btn.ghost:hover{background:${T.paper};filter:none}
-.stat .n{font-family:'Schibsted Grotesk';font-size:38px;font-weight:800;letter-spacing:-.03em;line-height:1}
+.stat .n{font-family:'Schibsted Grotesk', Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;font-size:38px;font-weight:800;letter-spacing:-.03em;line-height:1}
 .stat .l{font-size:12.5px;color:${T.muted};margin-top:7px}
 table{width:100%;border-collapse:collapse}
-th{font-family:'IBM Plex Mono';font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+/* Tables whose cells are all full-width inputs: size the columns explicitly. */
+.fixedtable{table-layout:fixed;min-width:760px}
+.fixedtable td{overflow:hidden}
+th{font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
   color:${T.muted};text-align:left;padding:10px 12px;border-bottom:1px solid ${T.hairline};font-weight:500}
 td{padding:11px 12px;border-bottom:1px solid ${T.hairline};font-size:13.5px;vertical-align:middle}
 tr:last-child td{border-bottom:none}
 .scorebox{width:54px;padding:5px 7px;border:1px solid ${T.hairline};border-radius:8px;
-  font-family:'IBM Plex Mono';font-size:13px;text-align:center;background:${T.paper}}
+  font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:13px;text-align:center;background:${T.paper}}
 .mini{font-size:11px;font-weight:600;padding:5px 10px;border-radius:999px;border:1px solid ${T.hairline};
   background:${T.surface};color:${T.muted};min-height:26px}
 /* Every icon-only control clears the 24px minimum target. The glyph keeps its
@@ -106,7 +112,7 @@ tr:last-child td{border-bottom:none}
 .track{flex:1;height:9px;border-radius:999px;background:${T.hairline};overflow:hidden}
 .track>div{height:100%;border-radius:999px;background:var(--accent)}
 .utilbtn{display:none}
-.savechip{display:inline-flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;
+.savechip{display:inline-flex;align-items:center;gap:6px;font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size:11px;color:${T.muted};white-space:nowrap}
 .utilpanel{position:absolute;right:16px;top:60px;z-index:20;background:${T.surface};
   border:1px solid ${T.hairline};border-radius:14px;padding:12px;min-width:230px;
@@ -116,7 +122,12 @@ tr:last-child td{border-bottom:none}
    onto their own line rather than widening the page where there is not. */
 .callrow{flex-wrap:wrap}
 .callrow .nums{white-space:nowrap}
-@media(max-width:520px){.callrow .nums{white-space:normal}}
+/* On a phone the figures take their own line under the name, instead of
+   squeezing the name to one word per line beside them. */
+@media(max-width:520px){
+  .callrow .nums{white-space:normal;flex:1 1 100%}
+  .callrow.withdot .nums{padding-left:19px}
+}
 
 @media(max-width:860px){
   /* The session row's columns are fixed-width and total more than a phone
@@ -124,6 +135,8 @@ tr:last-child td{border-bottom:none}
   .sessionrow{flex-wrap:wrap}
 }
 @media(max-width:1000px){
+  .gcs .dashfigures{order:-1}
+  .gcs .wheelcard svg{max-width:230px !important}
   /* Inline grid-template-columns is set per screen, so it has to be overridden
      here to let two- and three-column layouts stack on small viewports. */
   .gcs .grid.resp{grid-template-columns:1fr !important}
@@ -138,6 +151,7 @@ tr:last-child td{border-bottom:none}
   .sidefoot{display:none}
   .navitem{width:auto;white-space:nowrap;flex:0 0 auto;padding:8px 11px}
   .content,.topbar{padding-left:18px;padding-right:18px}
+  .topbar{top:var(--side-h,0px)}
 }
 .drop{border:1.5px dashed ${T.hairline};border-radius:14px;padding:15px 16px;display:flex;
   align-items:center;gap:13px;background:${T.surface};transition:.12s;cursor:pointer;width:100%;text-align:left}
@@ -150,26 +164,32 @@ tr:last-child td{border-bottom:none}
   font-size:13.5px;cursor:pointer;width:100%;text-align:left;background:none}
 .chk:last-child{border-bottom:none}
 .chk.done .lbl{text-decoration:line-through;color:${T.muted}}
-.chk .owner{font-size:10.5px;color:${T.muted};margin-left:auto;font-family:'IBM Plex Mono';white-space:nowrap}
+.chk .owner{font-size:10.5px;color:${T.muted};margin-left:auto;font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;white-space:nowrap}
 .chip{font-size:12px;font-weight:600;padding:6px 12px;border-radius:999px;border:1px solid ${T.hairline};
   background:${T.surface};color:${T.muted};max-width:230px;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;vertical-align:middle}
 .chip.on{border-color:var(--accent);color:#fff;background:var(--accent)}
 .chipx{display:inline-flex;align-items:center;gap:7px;max-width:300px}
 .chipx .lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.chipx .n{flex:0 0 auto;font-family:'IBM Plex Mono',monospace;font-size:10px;opacity:.85}
+.chipx .n{flex:0 0 auto;font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:10px;opacity:.85}
 .chiprow{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-.calstrip{display:grid;grid-template-columns:repeat(12,1fr);gap:6px;overflow-x:auto}
-.calcell{border:1px solid ${T.hairline};border-radius:10px;padding:8px 6px;min-height:78px;
-  background:${T.surface};min-width:62px}
-.calcell .mo{font-family:'IBM Plex Mono';font-size:10px;color:${T.muted};text-transform:uppercase;letter-spacing:.06em}
+/* Twelve months in a row left each about 66px of text width, and "Homecoming"
+   came out as "Homecomin". Below 1200px the year splits into two rows of six —
+   Sep-Feb and Mar-Aug, which is also how the programme's two seasons fall. */
+.calstrip{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:6px}
+@media(max-width:1200px){.calstrip{grid-template-columns:repeat(6,minmax(0,1fr))}}
+@media(max-width:560px){.calstrip{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.calcell{border:1px solid ${T.hairline};border-radius:10px;padding:8px 5px;min-height:78px;
+  background:${T.surface};min-width:0}
+.calcell .mo{font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:10px;color:${T.muted};text-transform:uppercase;letter-spacing:.06em}
 .calcell.cur{background:${T.paper};border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
-.evt{font-size:10px;font-weight:700;margin-top:5px;padding:3px 5px;border-radius:6px;line-height:1.15;color:#fff}
+.evt{font-size:10px;font-weight:700;margin-top:5px;padding:3px 4px;border-radius:6px;line-height:1.2;color:#fff;
+  overflow-wrap:anywhere;hyphens:auto}
 .search{display:flex;align-items:center;gap:8px;border:1px solid ${T.hairline};border-radius:11px;
   padding:9px 12px;background:${T.surface};max-width:340px}
 .search input{border:none;outline:none;font-family:inherit;font-size:13px;width:100%;background:transparent;color:${T.ink}}
 .scards{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:13px}
-.award{font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;font-family:'IBM Plex Mono';color:#fff}
+.award{font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;color:#fff}
 
 /* inline fields — focus styling in CSS rather than by mutating the DOM node */
 .einput{padding:6px 8px;border:1px solid transparent;border-radius:8px;font-family:inherit;
@@ -184,7 +204,7 @@ tr:last-child td{border-bottom:none}
 .notefield::placeholder{color:#A8A29C}
 .notefield:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px ${T.hairline}}
 .datefield{padding:5px 8px;border:1px solid ${T.hairline};border-radius:8px;font-size:12px;
-  background:${T.surface};color:${T.ink};font-family:'IBM Plex Mono',monospace}
+  background:${T.surface};color:${T.ink};font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
 .datefield:focus{outline:none;border-color:var(--accent)}
 
 /* Money input — boxed like the date beside it. Unboxed, a bare number next to
@@ -192,7 +212,7 @@ tr:last-child td{border-bottom:none}
    in, and amounts end up typed into the note. */
 .moneyfield{display:inline-flex;align-items:center;gap:1px;padding:0 7px;
   border:1px solid ${T.hairline};border-radius:8px;background:${T.surface};transition:.12s}
-.moneyfield .cur{font-family:'IBM Plex Mono',monospace;font-size:12px;color:${T.muted}}
+.moneyfield .cur{font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:12px;color:${T.muted}}
 .moneyfield .einput{padding:5px 2px}
 .moneyfield .einput:hover,.moneyfield .einput:focus{border-color:transparent;background:transparent;box-shadow:none}
 .moneyfield:focus-within{border-color:var(--accent)}
@@ -208,7 +228,7 @@ tr:last-child td{border-bottom:none}
   padding:4px 14px 10px;overflow-x:auto}
 .callgroup+.callband{margin-top:20px}
 .calltag{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:999px;
-  font-family:'IBM Plex Mono',monospace;color:#fff;white-space:nowrap}
+  font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;color:#fff;white-space:nowrap}
 
 /* deliverables */
 .delrow{display:flex;align-items:flex-start;gap:12px;padding:10px 0;
@@ -218,7 +238,7 @@ tr:last-child td{border-bottom:none}
 .delrow>.pill{flex:0 0 132px;justify-content:center;margin-top:1px}
 @media(max-width:640px){.delrow>.pill{flex:0 0 auto}}
 .badge{display:inline-grid;place-items:center;min-width:17px;height:17px;padding:0 5px;
-  border-radius:999px;font-size:10px;font-weight:700;font-family:'IBM Plex Mono',monospace;color:#fff}
+  border-radius:999px;font-size:10px;font-weight:700;font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;color:#fff}
 .empty{color:${T.muted};font-size:13px;padding:14px 0;text-align:center}
 
 `;
@@ -295,7 +315,7 @@ const PIZZA = [
   { title: "Pizza Q&A · Special call info", date: "Mar 5", time: "12:30", room: "EV-3.309", reg: 28, done: false },
 ];
 
-/* configurable calls — each has its own topic + colour, like the switcher.
+/* configurable calls — each has its own topic + colour, which its teams carry.
    PALETTE is imported from ./lib/theme. */
 const SEED_CALLS = [
   { id: "regular", name: "Regular", topic: "Open to all GCS student projects", accent: "#912338", open: "Mar 2", close: "May 8", subs: 34, fixed: true },
@@ -672,7 +692,7 @@ function Wheel({ accent }) {
         const isCur = i === curIdx;
         return (
           <text key={m} x={p.x} y={p.y + 4} textAnchor="middle"
-            fontFamily="IBM Plex Mono" fontSize="11"
+            fontFamily={MONO} fontSize="11"
             fontWeight={isCur ? 700 : 400} fill={isCur ? accent : T.muted}>{m}</text>
         );
       })}
@@ -683,8 +703,8 @@ function Wheel({ accent }) {
         return <circle key={e.label} cx={p.x} cy={p.y} r="4.5" fill={e.color} stroke="#fff" strokeWidth="2" />;
       })}
       {/* center */}
-      <text x={cx} y={cy - 6} textAnchor="middle" fontFamily="Schibsted Grotesk" fontWeight="800" fontSize="34" fill={T.ink}>{CURRENT.toUpperCase()}</text>
-      <text x={cx} y={cy + 16} textAnchor="middle" fontFamily="IBM Plex Mono" fontSize="9.5" letterSpacing="1.2" fill={accent}>{PHASE_SHORT}</text>
+      <text x={cx} y={cy - 6} textAnchor="middle" fontFamily={DISP} fontWeight="800" fontSize="34" fill={T.ink}>{CURRENT.toUpperCase()}</text>
+      <text x={cx} y={cy + 16} textAnchor="middle" fontFamily={MONO} fontSize="9.5" letterSpacing="1.2" fill={accent}>{PHASE_SHORT}</text>
     </svg>
   );
 }
@@ -815,6 +835,15 @@ export default function App() {
   /* ---- cycles: registry is global; everything operational is keyed by the viewed cycle ---- */
   const [cycles, setCycles, saveCycles] = useCloudSection("cycles", SEED_CYCLES, "global");
   const saveState = useSaveStatus();
+  const sideRef = useRef(null);
+  const [sideH, setSideH] = useState(0);
+  useEffect(() => {
+    const el = sideRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setSideH(Math.round(el.getBoundingClientRect().height)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const [utilOpen, setUtilOpen] = useState(false);
   const activeCycle = cycles.find((c) => c.status === "active") || cycles[0] || SEED_CYCLES[0];
   const [viewCycleId, setViewCycleId] = useState(null); // null = follow the active cycle
@@ -825,7 +854,6 @@ export default function App() {
   const [newCyLabel, setNewCyLabel] = useState("");
 
   const [callList, setCallList] = useCloudSection("calls", SEED_CALLS, cycleId);
-  const [activeCall, setActiveCall] = useState("regular");
   const [draft, setDraft] = useState({ open: false, name: "", topic: "", accent: PALETTE[1].hex });
   const [sessions, setSessions] = useCloudSection("sessions", SESSIONS, cycleId);
   const [psDraft, setPsDraft] = useState({ date: "", title: "", who: "" });
@@ -863,14 +891,12 @@ export default function App() {
   const [cohortsTab, setCohortsTab] = useState("success");
   const [cohortFilter, setCohortFilter] = useState("all");
   const [query, setQuery] = useState("");
-  /* The themed accent follows the selected call. If that call was deleted or
-     the cycle's call list never had a "regular", fall back to the first call
-     that does exist rather than leaving the switcher with nothing selected. */
-  const accentObj = callList.find((c) => c.id === activeCall) || callList[0];
+  /* The app used to recolour itself from a Regular | Special switcher in the
+     top bar. It sat where a filter would sit, read like one, and filtered
+     nothing. Each team now carries its own call's colour, so the chrome keeps
+     one steady accent: the Regular call's. */
+  const accentObj = callList.find((c) => c.id === "regular") || callList[0];
   const accent = accentObj ? accentObj.accent : T.burgundy;
-  useEffect(() => {
-    if (callList.length && !callList.some((c) => c.id === activeCall)) setActiveCall(callList[0].id);
-  }, [callList, activeCall]);
 
   /* Deliverables: derived once and reused by the dashboard, the nav badge and
      the Teams screen, so every surface agrees on what is outstanding. */
@@ -1537,6 +1563,14 @@ export default function App() {
      field, so both read as zero. */
   const budgetOf = (p) => Number(p.budget) || 0;
   const spentOf = (p) => Number(p.spent) || 0;
+  const seedTotals = profiles.filter(isRunning).reduce(
+    (a, p) => ({ allocated: a.allocated + budgetOf(p), spent: a.spent + spentOf(p) }),
+    { allocated: 0, spent: 0 }
+  );
+  const p2Totals = phase2.filter((p) => p.status !== "completed").reduce(
+    (a, p) => ({ awarded: a.awarded + (Number(p.awarded) || 0), paid: a.paid + p2Paid(p) }),
+    { awarded: 0, paid: 0 }
+  );
   const cohortBudget = visibleProfiles.filter(isRunning).reduce(
     (a, p) => {
       const b = budgetOf(p), sp = spentOf(p);
@@ -1711,6 +1745,18 @@ export default function App() {
   };
 
   const [cohortData, setCohortData, saveCohorts] = useCloudSection("cohorts", COHORTS, "global");
+  /* The Cohorts library kept its own Phase II tick, separate from the Phase II
+     list that actually tracks the money — so Re:CON and GoniVision, funded at
+     $25,000 each, showed as never having reached Phase II and fell out of the
+     "Phase II only" filter. The Phase II list is now the authority: a library
+     team it funds is Phase II, whatever the old tick says. The tick remains for
+     past teams funded before this app kept Phase II records. */
+  const fundedNames = useMemo(
+    () => new Set((phase2 || []).map((p) => String(p.team || "").trim().toLowerCase()).filter(Boolean)),
+    [phase2]
+  );
+  const isFunded = (t) => fundedNames.has(String(t.name || "").trim().toLowerCase());
+  const inPhase2 = (t) => !!t.phase2 || isFunded(t);
   const [editTeam, setEditTeam] = useState(null);
   const [cohortMsg, setCohortMsg] = useState(null);
   /* Cohort teams are nested one level down, so they need their own stamp.
@@ -1970,12 +2016,12 @@ export default function App() {
   );
 
   return (
-    <div className="gcs" style={{ "--accent": accent }}>
+    <div className="gcs" style={{ "--accent": accent, "--side-h": `${sideH}px` }}>
       <style>{STYLE}</style>
       <DialogHost />
 
       {/* sidebar */}
-      <aside className="side">
+      <aside className="side" ref={sideRef}>
         <button className="brand" onClick={() => setView("dashboard")} style={{ background: "none", border: "none", textAlign: "left", width: "100%" }}>
           <div className="brandmark">IF</div>
           <div className="brandtext">
@@ -2000,20 +2046,11 @@ export default function App() {
       {/* main */}
       <div className="main">
         <div className="topbar">
-          <div>
-            <div className="eyebrow">Cycle {viewedCycle.label}{isPastView ? " · past" : ""}</div>
-            <div className="disp" style={{ fontWeight: 700, fontSize: 18, marginTop: 2 }}>
-              {(NAV.find((n) => n.id === view) || NAV[0]).label}
-            </div>
+          <div className="eyebrow" style={{ whiteSpace: "nowrap" }}>
+            Cycle {viewedCycle.label}{isPastView ? " · past" : ""}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", justifyContent: "flex-end" }}>
             {saveChip}
-            <div className="skin">
-              {callList.map((c) => (
-                <button key={c.id} className={activeCall === c.id ? "on" : ""} style={activeCall === c.id ? { background: c.accent } : {}} onClick={() => setActiveCall(c.id)} title={c.topic}>{c.name}</button>
-              ))}
-              <button onClick={() => { setView("calls"); setDraft((d) => ({ ...d, open: true })); }} title="Add a call" style={{ padding: "6px 12px", color: T.muted, fontWeight: 800 }}>+</button>
-            </div>
             <button className="utilbtn mini" onClick={() => setUtilOpen((o) => !o)} title="Cycle, backup and account"
               style={{ alignItems: "center", gap: 5 }}>
               <Settings size={13} /> Menu
@@ -2026,7 +2063,7 @@ export default function App() {
         )}
 
         {isPastView && (
-          <div style={{ background: T.tint, color: T.burgundy, padding: "8px 34px", fontSize: 12.5, fontFamily: "'IBM Plex Mono', monospace", display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ background: T.tint, color: T.burgundy, padding: "8px 34px", fontSize: 12.5, fontFamily: MONO, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
             <span>Viewing {viewedCycle.label} · past cycle — edits save to that cycle.</span>
             <button onClick={() => setViewCycleId(null)} style={{ textDecoration: "underline", fontWeight: 700, color: T.burgundy }}>
               Back to {activeCycle.label}
@@ -2041,7 +2078,7 @@ export default function App() {
               <div className="sub">One cohort cycle, two parallel calls. Right now: {(PHASE_BY_MONTH[CURRENT] || "").toLowerCase()}.</div>
 
               <div className="grid resp" style={{ gridTemplateColumns: "1.1fr 1.4fr", marginTop: 22, alignItems: "stretch" }}>
-                <div className="card" style={{ display: "flex", flexDirection: "column", justifyContent: "center" }}>
+                <div className="card wheelcard" style={{ display: "flex", flexDirection: "column", justifyContent: "center" }}>
                   <Wheel accent={accent} />
                   <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 6, flexWrap: "wrap" }}>
                     <Legend color={accent} label="Kickoff · Demo Day" />
@@ -2049,7 +2086,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
+                <div className="dashfigures" style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
                   <div className="grid" style={{ gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)" }}>
                     <Stat n={counts.submitted} l="Proposals submitted" accent={accent} />
                     <Stat n={counts.shortlisted} l="Shortlisted to interview" accent={accent} />
@@ -2062,7 +2099,7 @@ export default function App() {
                     <div className="eyebrow" style={{ marginBottom: 10 }}>By call</div>
                     {allGroups.map(({ call, teams: ts }) => (
                       <button key={call.id} onClick={() => { setView("selection"); setCallFilter(call.id); }}
-                        title={`Open the ${call.name} call in Selection`} className="callrow"
+                        title={`Open the ${call.name} call in Selection`} className="callrow withdot"
                         style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", padding: "9px 0", borderBottom: `1px solid ${T.hairline}` }}>
                         <span style={{ width: 9, height: 9, borderRadius: 999, background: call.accent, flex: "0 0 9px" }} />
                         <span style={{ flex: 1, minWidth: 0 }}>
@@ -2074,6 +2111,38 @@ export default function App() {
                         </span>
                       </button>
                     ))}
+                  </div>
+                  {/* Both phases now carry money; the landing page showed none of it. */}
+                  <div className="card">
+                    <div className="eyebrow" style={{ marginBottom: 10 }}>Funds</div>
+                    {seedTotals.allocated === 0 && p2Totals.awarded === 0 ? (
+                      <div style={{ color: T.muted, fontSize: 13 }}>No budgets or awards recorded yet.</div>
+                    ) : (
+                      <>
+                        {[
+                          { key: "p1", label: "Phase I seed budgets", scope: `cycle ${viewedCycle.label}`,
+                            used: seedTotals.spent, total: seedTotals.allocated, verb: "spent", go: "teams" },
+                          { key: "p2", label: "Phase II awards", scope: "active teams",
+                            used: p2Totals.paid, total: p2Totals.awarded, verb: "disbursed", go: "phase2" },
+                        ].filter((r) => r.total > 0 || r.used > 0).map((r, i, arr) => {
+                          const over = r.used > r.total;
+                          const pct = r.total ? Math.min(Math.round((r.used / r.total) * 100), 100) : 0;
+                          return (
+                            <button key={r.key} onClick={() => setView(r.go)} title={`Open ${r.go === "teams" ? "Phase I" : "Phase II"} teams`}
+                              style={{ display: "block", width: "100%", textAlign: "left", padding: "4px 0", marginTop: i ? 12 : 0 }}>
+                              <div className="callrow" style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 7 }}>
+                                <span style={{ fontWeight: 600, fontSize: 13 }}>{r.label} <span style={{ color: T.muted, fontWeight: 400, fontSize: 12 }}>· {r.scope}</span></span>
+                                <span className="mono nums" style={{ fontSize: 11.5, color: over ? T.danger : T.muted }}>
+                                  ${r.used.toLocaleString()} {r.verb} of ${r.total.toLocaleString()}
+                                </span>
+                              </div>
+                              <div className="track"><div style={{ width: pct + "%", background: over ? T.danger : accent }} /></div>
+                              {over && <div style={{ fontSize: 11.5, color: T.danger, marginTop: 4 }}>${(r.used - r.total).toLocaleString()} more {r.verb} than allocated</div>}
+                            </button>
+                          );
+                        })}
+                      </>
+                    )}
                   </div>
                   <div className="card">
                     <div className="eyebrow" style={{ marginBottom: 12 }}>Cycle {viewedCycle.label} · two seasons</div>
@@ -2107,14 +2176,15 @@ export default function App() {
           {view === "calls" && (
             <>
               <div className="h1 disp">Calls & promotion</div>
-              <div className="sub">Calls launch together each spring. Add a themed call, give it a topic and pick its colour — it appears in the switcher up top.</div>
+              <div className="sub">Calls launch together each spring. Add a themed call, give it a topic and pick its colour — its teams carry that colour everywhere they appear.</div>
               <div className="scards" style={{ marginTop: 20 }}>
                 {callList.map((c) => (
-                  <CallCard key={c.id} call={c} active={activeCall === c.id} palette={PALETTE}
+                  <CallCard key={c.id} call={c} palette={PALETTE}
+                    teamCount={teams.filter((t) => callFor(t, callList).id === c.id).length}
                     editing={editingCall === c.id}
                     onEdit={() => setEditingCall(editingCall === c.id ? null : c.id)}
                     onChange={(patch) => updCall(c.id, patch)}
-                    onUse={() => setActiveCall(c.id)}
+                    onOpen={() => { setCallFilter(c.id); setView("selection"); }}
                     onRemove={c.fixed ? null : async () => {
                       const attached = teams.filter((t) => callFor(t, callList).id === c.id).length
                         + profileRows.filter((p) => p.callId === c.id).length;
@@ -2126,7 +2196,6 @@ export default function App() {
                       );
                       if (!ok) return;
                       setCallList((cs) => cs.filter((x) => x.id !== c.id));
-                      if (activeCall === c.id) setActiveCall("regular");
                       if (callFilter === c.id) setCallFilter("all");
                       if (profileCallFilter === c.id) setProfileCallFilter("all");
                     }} />
@@ -2137,7 +2206,6 @@ export default function App() {
                     if (!name) return;
                     const id = "call-" + Date.now();
                     setCallList((cs) => [...cs, { id, name, topic: draft.topic.trim() || "Themed call", accent: draft.accent, open: "Mar 2", close: "May 8", subs: 0 }]);
-                    setActiveCall(id);
                     setDraft({ open: false, name: "", topic: "", accent: PALETTE[1].hex });
                   }} />
               </div>
@@ -2165,8 +2233,12 @@ export default function App() {
                 {classMsg && <div style={{ fontSize: 12, color: T.ok, marginBottom: 10 }}>{classMsg}</div>}
 
                 <div style={{ overflowX: "auto" }}>
-                  <table>
-                    <thead><tr><th>Course</th><th>Campus</th><th>Professor</th><th>Date</th><th>Advertised</th><th>Status</th><th></th></tr></thead>
+                  <table className="fixedtable">
+                    <colgroup>
+                      <col style={{ width: "34%" }} /><col style={{ width: "9%" }} /><col style={{ width: "17%" }} />
+                      <col style={{ width: "9%" }} /><col style={{ width: "17%" }} /><col style={{ width: "10%" }} /><col style={{ width: 40 }} />
+                    </colgroup>
+                    <thead><tr><th scope="col">Course</th><th scope="col">Campus</th><th scope="col">Professor</th><th scope="col">Date</th><th scope="col">Advertised</th><th scope="col">Status</th><th scope="col" aria-label="Remove" /></tr></thead>
                     <tbody>
                       {classes.map((p, i) => (
                         <tr key={p.rid || `class-${i}`}>
@@ -2206,8 +2278,12 @@ export default function App() {
                   <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={addPizza}><Plus size={14} /> Add Q&amp;A</button>
                 </div>
                 <div style={{ overflowX: "auto" }}>
-                  <table>
-                    <thead><tr><th>Session</th><th>Date</th><th>Time</th><th>Room</th><th>Registered</th><th>Status</th><th></th></tr></thead>
+                  <table className="fixedtable">
+                    <colgroup>
+                      <col style={{ width: "36%" }} /><col style={{ width: "12%" }} /><col style={{ width: "11%" }} />
+                      <col style={{ width: "14%" }} /><col style={{ width: "11%" }} /><col style={{ width: "11%" }} /><col style={{ width: 40 }} />
+                    </colgroup>
+                    <thead><tr><th scope="col">Session</th><th scope="col">Date</th><th scope="col">Time</th><th scope="col">Room</th><th scope="col">Registered</th><th scope="col">Status</th><th scope="col" aria-label="Remove" /></tr></thead>
                     <tbody>
                       {pizza.map((p, i) => (
                         <tr key={p.rid || `pizza-${i}`}>
@@ -2352,7 +2428,7 @@ export default function App() {
                                       value={callFor(t, callList).id}
                                       aria-label={`Call for ${t.name || "this team"}`}
                                       onChange={(e) => upd(t.id, { callId: e.target.value, cohort: undefined })}
-                                      style={{ fontFamily: "IBM Plex Mono", fontSize: 11.5, padding: "5px 7px", borderRadius: 8, background: T.surface, maxWidth: 130,
+                                      style={{ fontFamily: MONO, fontSize: 11.5, padding: "5px 7px", borderRadius: 8, background: T.surface, maxWidth: 130,
                                                border: `1px solid ${callFor(t, callList).accent}`, color: callFor(t, callList).accent, fontWeight: 600 }}>
                                       {callList.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                                       {callFor(t, callList).id === UNASSIGNED && <option value={UNASSIGNED}>Unassigned</option>}
@@ -2371,7 +2447,7 @@ export default function App() {
                                   <td style={{ minWidth: 118 }}><EInput value={t.date} onChange={(v) => upd(t.id, { date: v })} placeholder="Set date/time" mono /></td>
                                   <td>
                                     <select value={t.outcome ?? ""} aria-label={`Outcome for ${t.name || "this team"}`} onChange={(e) => upd(t.id, { outcome: e.target.value || null })}
-                                      style={{ fontFamily: "IBM Plex Mono", fontSize: 12, padding: "5px 7px", border: `1px solid ${T.hairline}`, borderRadius: 8, background: T.surface, color: T.ink }}>
+                                      style={{ fontFamily: MONO, fontSize: 12, padding: "5px 7px", border: `1px solid ${T.hairline}`, borderRadius: 8, background: T.surface, color: T.ink }}>
                                       <option value="">Decide…</option>
                                       <option value="select">Selected</option>
                                       <option value="waitlist">Waitlist</option>
@@ -2380,7 +2456,7 @@ export default function App() {
                                   </td>
                                   <td>
                                     <select value={t.stage} aria-label={`Next step for ${t.name || "this team"}`} onChange={(e) => upd(t.id, { stage: e.target.value })}
-                                      style={{ fontFamily: "IBM Plex Mono", fontSize: 12, padding: "5px 7px", border: `1px solid ${T.hairline}`, borderRadius: 8, background: T.surface, color: T.ink }}>
+                                      style={{ fontFamily: MONO, fontSize: 12, padding: "5px 7px", border: `1px solid ${T.hairline}`, borderRadius: 8, background: T.surface, color: T.ink }}>
                                       {STAGES.map((st) => <option key={st.id} value={st.id}>{st.label}</option>)}
                                     </select>
                                   </td>
@@ -2752,7 +2828,7 @@ export default function App() {
                                   aria-label={`Call for ${activeProfile.name || "this team"}`}
                                   title="Which call this team applied to — changing it moves the team to that group"
                                   onChange={(e) => setProfileCall(activeProfile.id, e.target.value)}
-                                  style={{ fontFamily: "IBM Plex Mono", fontSize: 11.5, padding: "5px 7px", borderRadius: 8, background: T.surface, maxWidth: 210,
+                                  style={{ fontFamily: MONO, fontSize: 11.5, padding: "5px 7px", borderRadius: 8, background: T.surface, maxWidth: 210,
                                            border: `1px solid ${profileCall(activeProfile).accent}`, color: profileCall(activeProfile).accent, fontWeight: 600 }}>
                                   {callList.map((c) => (
                                     <option key={c.id} value={c.id}>{c.name}{c.topic ? ` — ${c.topic}` : ""}</option>
@@ -2777,7 +2853,7 @@ export default function App() {
                                   aria-label="Team status"
                                   onChange={(e) => updProfile(activeProfile.id, { status: e.target.value })}
                                   style={{
-                                    fontFamily: "IBM Plex Mono", fontSize: 11.5, padding: "5px 7px", borderRadius: 8,
+                                    fontFamily: MONO, fontSize: 11.5, padding: "5px 7px", borderRadius: 8,
                                     background: T.surface, fontWeight: 600, maxWidth: "100%",
                                     border: `1px solid ${statusOf(activeProfile).fg}`, color: statusOf(activeProfile).fg,
                                   }}>
@@ -2970,7 +3046,7 @@ export default function App() {
                         {evs.map((e, k) => {
                           const bg = e.color ? e.color : e.key ? accent : e.label === "Homecoming" ? T.gold : T.muted;
                           return (
-                            <div key={e.rid || `${m}-${k}`} className="evt" title="Click to edit" style={{ background: bg, cursor: "pointer" }}
+                            <div key={e.rid || `${m}-${k}`} className="evt" title={`${e.label} — click to edit`} style={{ background: bg, cursor: "pointer" }}
                               onClick={() => { const idx = events.indexOf(e); setEvDraft({ open: true, m: e.m, label: e.label, color: bg, idx }); }}>
                               {e.label}
                             </div>
@@ -3366,7 +3442,9 @@ export default function App() {
                 if (!items.length)
                   return <div className="card" style={{ marginTop: 16, color: T.muted, fontSize: 13.5 }}>Nothing here{q ? " matches that search" : " yet"} — add an entry.</div>;
                 return (
-                  <div className="scards" style={{ marginTop: 16 }}>
+                  <div className="scards" style={{ marginTop: 16, alignItems: "start" }}>
+                    {/* Entries vary from two lines to twenty, so each card takes its
+                        own height rather than stretching to the tallest in its row. */}
                     {items.map((k) => (
                       kbEdit === k.id ? (
                         <div key={k.id} className="card" style={{ padding: 15, borderColor: T.burgundy, boxShadow: `0 0 0 1px ${T.tint} inset` }}>
@@ -3394,7 +3472,7 @@ export default function App() {
                               <IconBtn onClick={() => setKbEdit(k.id)} title="Edit"><Pencil size={13} /></IconBtn>
                             </div>
                           </div>
-                          <div style={{ color: T.muted, fontSize: 12.5, marginTop: 7, lineHeight: 1.5, whiteSpace: "pre-wrap", fontFamily: k.category === "templates" ? "'IBM Plex Mono', monospace" : "inherit" }}>
+                          <div style={{ color: T.muted, fontSize: 12.5, marginTop: 7, lineHeight: 1.5, whiteSpace: "pre-wrap", fontFamily: k.category === "templates" ? MONO : "inherit" }}>
                             {k.body}
                           </div>
                           {k.category === "templates" && (
@@ -3457,7 +3535,7 @@ export default function App() {
 
                   {(() => {
                     const q = query.trim().toLowerCase();
-                    const match = (t) => (cohortFilter !== "phase2" || t.phase2) && (!q || (t.name || "").toLowerCase().includes(q) || (t.blurb || "").toLowerCase().includes(q));
+                    const match = (t) => (cohortFilter !== "phase2" || inPhase2(t)) && (!q || (t.name || "").toLowerCase().includes(q) || (t.blurb || "").toLowerCase().includes(q));
                     const anyVisible = cohortData.some((co) => (cohortFilter === "all" || cohortFilter === "phase2" || cohortFilter === co.c) && co.teams.some(match));
                     if (!anyVisible)
                       return <div className="card" style={{ marginTop: 16, color: T.muted, fontSize: 13.5 }}>No teams match that. Try another cohort, clear the search, or drop in a file above.</div>;
@@ -3476,7 +3554,7 @@ export default function App() {
                           <div className="scards">
                             {visible.map(({ t, ti }) => (
                               editTeam === t.rid && t.rid ? (
-                                <TeamEditCard key={t.rid} t={t} awards={AWARDS}
+                                <TeamEditCard key={t.rid} t={t} awards={AWARDS} funded={isFunded(t)}
                                   onChange={(patch) => updTeam(ci, ti, patch)}
                                   onToggleAward={(a) => toggleAward(ci, ti, a)}
                                   onDone={() => setEditTeam(null)}
@@ -3485,7 +3563,7 @@ export default function App() {
                                     rmTeam(ci, ti); setEditTeam(null);
                                   }} />
                               ) : (
-                                <TeamCard key={t.rid || `${ci}-${ti}`} t={t} onEdit={() => setEditTeam(t.rid)} />
+                                <TeamCard key={t.rid || `${ci}-${ti}`} t={t} phase2={inPhase2(t)} onEdit={() => setEditTeam(t.rid)} />
                               )
                             ))}
                           </div>
@@ -3746,13 +3824,13 @@ function Alert({ icon, text, cta, onClick, accent, last, tone }) {
     </div>
   );
 }
-function TeamCard({ t, onEdit }) {
+function TeamCard({ t, phase2, onEdit }) {
   return (
     <div className="card" style={{ padding: 15 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
         <span className="disp" style={{ fontWeight: 700, fontSize: 15 }}>{t.name || "Untitled team"}</span>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flex: "0 0 auto" }}>
-          {t.phase2 && <Pill bg={T.tint} fg={T.burgundy}>Phase II</Pill>}
+          {phase2 && <Pill bg={T.tint} fg={T.burgundy}>Phase II</Pill>}
           <IconBtn onClick={onEdit} title="Edit team"><Pencil size={13} /></IconBtn>
         </div>
       </div>
@@ -3770,7 +3848,7 @@ function TeamCard({ t, onEdit }) {
     </div>
   );
 }
-function TeamEditCard({ t, awards, onChange, onToggleAward, onDone, onRemove }) {
+function TeamEditCard({ t, awards, funded, onChange, onToggleAward, onDone, onRemove }) {
   const inp = { width: "100%", padding: "7px 9px", border: `1px solid ${T.hairline}`, borderRadius: 8, fontFamily: "inherit", fontSize: 12.5, background: T.surface, color: T.ink };
   return (
     <div className="card" style={{ padding: 15, borderColor: T.burgundy, boxShadow: `0 0 0 1px ${T.tint} inset` }}>
@@ -3783,7 +3861,16 @@ function TeamEditCard({ t, awards, onChange, onToggleAward, onDone, onRemove }) 
           const on = t.awards.includes(a);
           return <button key={a} className="mini" style={on ? { borderColor: AWARD_COLOR[a], color: a === "Most Innovative" ? T.ink : "#fff", background: AWARD_COLOR[a] } : {}} onClick={() => onToggleAward(a)}>{a}</button>;
         })}
-        <button className="mini" style={t.phase2 ? { borderColor: T.burgundy, color: "#fff", background: T.burgundy } : {}} onClick={() => onChange({ phase2: !t.phase2 })}>Phase II</button>
+        {funded ? (
+          <span className="mini" title="Funded in Phase II teams — change it there"
+            style={{ borderColor: T.burgundy, color: "#fff", background: T.burgundy, display: "inline-flex", alignItems: "center" }}>
+            Phase II · funded
+          </span>
+        ) : (
+          <button className="mini" style={t.phase2 ? { borderColor: T.burgundy, color: "#fff", background: T.burgundy } : {}}
+            title="For teams funded before Phase II was tracked here"
+            onClick={() => onChange({ phase2: !t.phase2 })}>Phase II</button>
+        )}
       </div>
       <div style={{ marginBottom: 11 }}>
         <NoteField value={t.note || ""} onChange={(v) => onChange({ note: v })} placeholder="Traction note — clients, funding, pilots, press" minRows={2} style={{ fontSize: 12.5 }} />
@@ -3795,11 +3882,11 @@ function TeamEditCard({ t, awards, onChange, onToggleAward, onDone, onRemove }) 
     </div>
   );
 }
-function CallCard({ call, active, palette, editing, onEdit, onChange, onUse, onRemove }) {
+function CallCard({ call, teamCount, palette, editing, onEdit, onChange, onOpen, onRemove }) {
   const fld = (k, ph, opts = {}) => (
     <input value={call[k] ?? ""} onChange={(e) => onChange({ [k]: opts.num ? e.target.value.replace(/\D/g, "") : e.target.value })} placeholder={ph}
       className={opts.mono ? "mono" : ""}
-      style={{ width: opts.w || "100%", padding: "7px 9px", border: `1px solid ${T.hairline}`, borderRadius: 8, fontFamily: opts.mono ? "IBM Plex Mono" : "inherit", fontSize: 13, background: T.surface, color: T.ink }} />
+      style={{ width: opts.w || "100%", padding: "7px 9px", border: `1px solid ${T.hairline}`, borderRadius: 8, fontFamily: opts.mono ? MONO : "inherit", fontSize: 13, background: T.surface, color: T.ink }} />
   );
   if (editing) {
     return (
@@ -3821,7 +3908,7 @@ function CallCard({ call, active, palette, editing, onEdit, onChange, onUse, onR
     );
   }
   return (
-    <div className="card" style={{ padding: 16, borderColor: active ? call.accent : T.hairline, boxShadow: active ? `0 0 0 1px ${call.accent} inset` : "none" }}>
+    <div className="card" style={{ padding: 16, borderTop: `3px solid ${call.accent}` }}>
       <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
         <span style={{ width: 10, height: 10, borderRadius: 999, background: call.accent }} />
         <span className="disp" style={{ fontWeight: 700, fontSize: 16 }}>{call.name} call</span>
@@ -3836,8 +3923,9 @@ function CallCard({ call, active, palette, editing, onEdit, onChange, onUse, onR
         <div><div className="eyebrow">Closes</div><div className="mono" style={{ fontSize: 13.5, marginTop: 3 }}>{call.close}</div></div>
         <div><div className="eyebrow">Subs</div><div className="disp" style={{ fontSize: 21, fontWeight: 800, marginTop: 1, color: call.accent }}>{call.subs}</div></div>
       </div>
-      <button className="mini" style={active ? { marginTop: 14, borderColor: call.accent, color: "#fff", background: call.accent } : { marginTop: 14 }} onClick={onUse}>
-        {active ? "Active theme" : "Use this theme"}
+      <button className="mini" style={{ marginTop: 14, borderColor: call.accent, color: call.accent }} onClick={onOpen}
+        title={`Open Selection filtered to the ${call.name} call`}>
+        {teamCount} shortlisted team{teamCount === 1 ? "" : "s"} →
       </button>
     </div>
   );
