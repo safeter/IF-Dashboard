@@ -1,5 +1,5 @@
 import { T } from "./theme";
-import { daysUntil, fmtDate, ISO_RE } from "./ui";
+import { daysUntil, fmtDate, ISO_RE, safeUrl } from "./ui";
 
 /* ============================================================
    Call attribution
@@ -197,3 +197,26 @@ export function totalScore(rec, panel) {
 /** How many of the panel have actually scored — surfaces a half-entered row. */
 export const judgesIn = (rec, panel) =>
   judgeScores(rec, panel).filter((v) => v === 0 || Number(v) > 0).length;
+
+
+/* ============================================================
+   Team documents
+
+   Every team — Phase I and Phase II alike — is expected to keep two documents
+   on file: its budget and its calendar of activities. They get named slots so
+   a missing one is visible, rather than being one more line in a free list
+   that nobody notices is absent. Anything else goes under "other documents".
+   ============================================================ */
+export const REQUIRED_DOCS = [
+  { key: "budget", label: "Budget" },
+  { key: "calendar", label: "Calendar of activities" },
+];
+
+/** True when the slot holds a real, openable web address. */
+export const docOnFile = (rec, key) => !!safeUrl(rec && rec.docs && rec.docs[key] && rec.docs[key].url);
+
+/** { onFile, total, missing: [labels] } across the required slots. */
+export function docsSummary(rec) {
+  const missing = REQUIRED_DOCS.filter((d) => !docOnFile(rec, d.key)).map((d) => d.label);
+  return { onFile: REQUIRED_DOCS.length - missing.length, total: REQUIRED_DOCS.length, missing };
+}
