@@ -18,6 +18,7 @@ import {
   deliverableState, isOutstanding, deliverableSummary, profileDeliverableState, SOON_DAYS,
   parseMembers, TEAM_STATUS, statusOf, isRunning,
   JUDGE_MAX, judgeScores, hasBreakdown, totalScore, judgesIn,
+  REQUIRED_DOCS, docsSummary,
 } from "./lib/model";
 import {
   LayoutGrid, Megaphone, ListChecks, CalendarDays,
@@ -82,6 +83,7 @@ const STYLE = `
 table{width:100%;border-collapse:collapse}
 /* Tables whose cells are all full-width inputs: size the columns explicitly. */
 .fixedtable{table-layout:fixed;min-width:760px}
+.docslot{border:1px solid;border-radius:10px;padding:8px 10px;margin-top:7px}
 .fixedtable td{overflow:hidden}
 th{font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
   color:${T.muted};text-align:left;padding:10px 12px;border-bottom:1px solid ${T.hairline};font-weight:500}
@@ -643,6 +645,64 @@ function LinkList({ links, onChange, addLabel = "Link", placeholder = "Paste a D
   );
 }
 
+/**
+ * A team's documents, for either phase.
+ *
+ * The budget and the calendar of activities have named slots, each saying
+ * plainly whether it is on file and when it last changed; everything else goes
+ * in the free list beneath. The record carries `docs.{budget,calendar}` and
+ * `links`, so Phase I profiles and Phase II teams share one shape.
+ */
+function TeamDocs({ rec, onChange }) {
+  const docs = rec.docs || {};
+  const sum = docsSummary(rec);
+  const setDoc = (key, url) => {
+    const prev = docs[key] || {};
+    // Stamp the date only when the address really changes to something openable.
+    const changed = (prev.url || "") !== url;
+    onChange({ docs: { ...docs, [key]: { url, at: changed && safeUrl(url) ? todayISO() : prev.at || "" } } });
+  };
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 2 }}>
+        <span className="eyebrow">Documents</span>
+        <span className="mono" style={{ fontSize: 10.5, color: sum.onFile === sum.total ? T.ok : T.warnInk }}
+          title={sum.missing.length ? `Missing: ${sum.missing.join(", ")}` : "Budget and calendar both on file"}>
+          {sum.onFile}/{sum.total} required on file
+        </span>
+      </div>
+      {REQUIRED_DOCS.map((d) => {
+        const doc = docs[d.key] || {};
+        const href = safeUrl(doc.url);
+        return (
+          <div key={d.key} className="docslot" style={{ borderColor: href ? T.hairline : T.warn, background: href ? T.surface : T.warnTint }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+              <span style={{ width: 7, height: 7, borderRadius: 999, flex: "0 0 7px", background: href ? T.ok : T.warn }} />
+              <span style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }}>{d.label}</span>
+              <span className="mono" style={{ fontSize: 10.5, color: href ? T.muted : T.warnInk, marginLeft: "auto", whiteSpace: "nowrap" }}>
+                {href ? (doc.at ? `updated ${fmtDate(doc.at)}` : "on file") : doc.url ? "not a web address" : "missing"}
+              </span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 5 }}>
+              <EInput value={doc.url} onChange={(v) => setDoc(d.key, v)}
+                placeholder="Paste the Drive or SharePoint link" ariaLabel={`${d.label} link`} />
+              {href && (
+                <a href={href} target="_blank" rel="noopener noreferrer" className="mini" title={href}
+                  style={{ textDecoration: "none", whiteSpace: "nowrap", flex: "0 0 auto", display: "inline-flex", alignItems: "center" }}>
+                  <ExternalLink size={11} style={{ marginRight: 4 }} />Open
+                </a>
+              )}
+            </div>
+          </div>
+        );
+      })}
+      <div className="eyebrow" style={{ margin: "10px 0 0", fontSize: 10 }}>Other documents</div>
+      <LinkList links={rec.links} onChange={(links) => onChange({ links })}
+        addLabel="Document" placeholder="Agreement, deck, report…" />
+    </div>
+  );
+}
+
 /* Icon-only control. Every one carries a label so the screen is navigable
    without sight of the glyph. */
 const IconBtn = ({ onClick, title, children, color, disabled, style }) => (
@@ -1190,7 +1250,7 @@ export default function App() {
         : (accentObj ? accentObj.id : "regular")),
     members: "", dept: "", supervisor: "", mentor: "", finance: "pending", notes: "",
     budget: "", spent: "", status: "active",
-    meetings: [], deliverables: [], links: [],
+    meetings: [], deliverables: [], links: [], docs: {},
   });
   const missingProfiles = teams.filter(
     (t) => t.outcome === "select" && !profiles.some((p) => p.teamId === t.id || (p.name && p.name === t.name))
@@ -1288,7 +1348,7 @@ export default function App() {
   const p2Paid = (p) => (p.payments || []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
   const updP2 = (id, patch) => setPhase2((ps) => ps.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   const addP2 = () => {
-    const p = { id: uid(), team: "", cohort: viewedCycle.label, awarded: "", status: "active", note: "", payments: [], meetings: [] };
+    const p = { id: uid(), team: "", cohort: viewedCycle.label, awarded: "", status: "active", note: "", payments: [], meetings: [], docs: {}, links: [] };
     setPhase2((ps) => [...ps, p]);
     setActiveP2Id(p.id);
   };
@@ -1925,7 +1985,7 @@ export default function App() {
   const agreedPill = (a) =>
     a === "yes" ? <Pill bg="#E8F0DD" fg={T.ok}><Check size={12} /> Agreed</Pill> :
     a === "declined" ? <Pill bg="#FBE3DC" fg={T.danger}><X size={12} /> Declined</Pill> :
-    <Pill bg="#FBF1D8" fg="#9a7b12"><Clock size={12} /> Pending</Pill>;
+    <Pill bg="#FBF1D8" fg={T.warnInk}><Clock size={12} /> Pending</Pill>;
 
   /* One definition, rendered twice: in the sidebar on desktop and inside the
      topbar menu on narrow screens (where the sidebar footer is hidden). */
@@ -2709,7 +2769,7 @@ export default function App() {
                       <div className="eyebrow" style={{ marginBottom: 6 }}>By team</div>
                       <div style={{ overflowX: "auto" }}>
                         <table>
-                          <thead><tr><th scope="col">Team</th><th scope="col">Outstanding</th><th scope="col">Submitted</th><th scope="col">Status</th><th scope="col" aria-label="Open" /></tr></thead>
+                          <thead><tr><th scope="col">Team</th><th scope="col">Outstanding</th><th scope="col">Submitted</th><th scope="col">Status</th><th scope="col">Documents</th><th scope="col" aria-label="Open" /></tr></thead>
                           <tbody>
                             {[...visibleProfiles].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => {
                               const all = p.deliverables || [];
@@ -2725,6 +2785,12 @@ export default function App() {
                                     : worst
                                       ? <Pill bg={worst.bg} fg={worst.fg}>{worst.label}</Pill>
                                       : <Pill bg={T.okTint} fg={T.ok}><Check size={12} /> All in</Pill>}</td>
+                                  <td>{(() => {
+                                    const ds = docsSummary(p);
+                                    return ds.missing.length
+                                      ? <Pill bg={T.warnTint} fg={T.warnInk}><span title={`Missing: ${ds.missing.join(", ")}`}>{ds.onFile}/{ds.total} · no {ds.missing.map((m) => m.toLowerCase()).join(" or ")}</span></Pill>
+                                      : <Pill bg={T.okTint} fg={T.ok}><Check size={12} /> Both on file</Pill>;
+                                  })()}</td>
                                   <td>
                                     <button className="mini" onClick={() => { setActiveProfileId(p.id); setProfileCallFilter("all"); setTeamsTab("profiles"); }}>Open</button>
                                   </td>
@@ -2919,11 +2985,9 @@ export default function App() {
                                 </div>
                               );
                             })()}
-                            <div className="eyebrow" style={{ margin: "14px 0 3px" }}>Documents</div>
-                            <LinkList links={activeProfile.links}
-                              onChange={(links) => updProfile(activeProfile.id, { links })}
-                              addLabel="Document"
-                              placeholder="Agreement, budget sheet, deck…" />
+                            <div style={{ marginTop: 14 }}>
+                              <TeamDocs rec={activeProfile} onChange={(patch) => updProfile(activeProfile.id, patch)} />
+                            </div>
 
                             <div className="eyebrow" style={{ margin: "14px 0 3px" }}>Notes</div>
                             <NoteField value={activeProfile.notes} onChange={(v) => updProfile(activeProfile.id, { notes: v })}
@@ -3344,7 +3408,7 @@ export default function App() {
                   const st = attStats(cur.sid);
                   const byTeam = {};
                   roster.forEach((r) => { (byTeam[r.team] = byTeam[r.team] || []).push(r); });
-                  const pill = { present: { bg: "#E8F0DD", fg: T.ok, lbl: "Present" }, absent: { bg: "#FBE3DC", fg: T.danger, lbl: "Absent" }, excused: { bg: "#FBF1D8", fg: "#9a7b12", lbl: "Excused" } };
+                  const pill = { present: { bg: "#E8F0DD", fg: T.ok, lbl: "Present" }, absent: { bg: "#FBE3DC", fg: T.danger, lbl: "Absent" }, excused: { bg: "#FBF1D8", fg: T.warnInk, lbl: "Excused" } };
                   return (
                     <>
                       <div className="chiprow" style={{ marginTop: 18 }}>
@@ -3367,7 +3431,7 @@ export default function App() {
                               {cur.date}{cur.time ? " · " + cur.time : ""}{cur.place ? " · " + cur.place : ""}{cur.who ? " · " + cur.who : ""}
                             </div>
                             <div className="mono" style={{ fontSize: 12, marginTop: 6 }}>
-                              <span style={{ color: T.ok }}>{st.present} present</span> · <span style={{ color: T.danger }}>{st.absent} absent</span> · <span style={{ color: "#9a7b12" }}>{st.excused} excused</span> · <span style={{ color: T.muted }}>{st.total - st.marked} unmarked</span>
+                              <span style={{ color: T.ok }}>{st.present} present</span> · <span style={{ color: T.danger }}>{st.absent} absent</span> · <span style={{ color: T.warnInk }}>{st.excused} excused</span> · <span style={{ color: T.muted }}>{st.total - st.marked} unmarked</span>
                             </div>
                           </div>
                           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -3457,7 +3521,7 @@ export default function App() {
                               style={{ fontSize: 12.5 }} />
                           </div>
                           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                            <button className={"mini" + (k.draft ? " on" : "")} style={k.draft ? { borderColor: T.warn, color: "#9a7b12", background: "#FBF1D8" } : {}}
+                            <button className={"mini" + (k.draft ? " on" : "")} style={k.draft ? { borderColor: T.warn, color: T.warnInk, background: "#FBF1D8" } : {}}
                               onClick={() => updKb(k.id, { draft: !k.draft })}>{k.draft ? "⚠ Draft" : "Confirmed"}</button>
                             <button className="btn" style={{ flex: 1, justifyContent: "center", fontSize: 12, padding: "7px 12px" }} onClick={() => setKbEdit(null)}>Done</button>
                             <button className="btn ghost" style={{ padding: "7px 10px" }} onClick={() => { rmKb(k.id); setKbEdit(null); }} title="Remove entry"><Trash2 size={14} /></button>
@@ -3468,7 +3532,7 @@ export default function App() {
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
                             <span className="disp" style={{ fontWeight: 700, fontSize: 14.5 }}>{k.title || "Untitled"}</span>
                             <div style={{ display: "flex", gap: 6, alignItems: "center", flex: "0 0 auto" }}>
-                              {k.draft && <Pill bg="#FBF1D8" fg="#9a7b12">⚠ Draft</Pill>}
+                              {k.draft && <Pill bg="#FBF1D8" fg={T.warnInk}>⚠ Draft</Pill>}
                               <IconBtn onClick={() => setKbEdit(k.id)} title="Edit"><Pencil size={13} /></IconBtn>
                             </div>
                           </div>
@@ -3729,7 +3793,10 @@ export default function App() {
                                   : `total of ${payN} payment${payN === 1 ? "" : "s"} — change it in the ledger`}
                             </div>
                           </div>
-                          <div className="eyebrow" style={{ margin: "12px 0 3px" }}>Note</div>
+                          <div style={{ marginTop: 14 }}>
+                            <TeamDocs rec={activeP2} onChange={(patch) => updP2(activeP2.id, patch)} />
+                          </div>
+                          <div className="eyebrow" style={{ margin: "14px 0 3px" }}>Note</div>
                           <NoteField value={activeP2.note} onChange={(v) => updP2(activeP2.id, { note: v })}
                             placeholder="Awards, focus, anything worth remembering" minRows={5} />
                         </div>
