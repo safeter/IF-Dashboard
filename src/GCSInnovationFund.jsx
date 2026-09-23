@@ -1,22 +1,31 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
-import { useCloudSection, useSaveStatus, retryFailedSaves, writeRows, deleteCycleData } from "./lib/cloud";
+import {
+  useCloudSection, useSaveStatus, retryFailedSaves, writeRows, deleteCycleData,
+  conflictedSections, forceConflicts, dropConflicts,
+} from "./lib/cloud";
 import { supabase } from "./lib/supabase";
 import { T, PALETTE } from "./lib/theme";
-import { ui, DialogHost, NoteField, DateField, todayISO, fmtDate } from "./lib/ui";
+/* Every web font names a fallback. Without one, a blocked or slow Google Fonts
+   request drops the stat figures, the wheel and every table header into the
+   browser default — Times New Roman. */
+const MONO = "'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+const DISP = "'Schibsted Grotesk', Inter, system-ui, -apple-system, 'Segoe UI', sans-serif";
+import { ui, DialogHost, NoteField, DateField, todayISO, fmtDate, safeUrl, linkHost } from "./lib/ui";
 import {
   callFor, callGroups, matchCall, legacyCallId, UNASSIGNED,
   deliverableState, isOutstanding, deliverableSummary, profileDeliverableState, SOON_DAYS,
-  parseMembers,
+  parseMembers, TEAM_STATUS, statusOf, isRunning,
+  JUDGE_MAX, judgeScores, hasBreakdown, totalScore, judgesIn,
 } from "./lib/model";
 import {
   LayoutGrid, Megaphone, ListChecks, CalendarDays,
   Check, Clock, X, Sparkles, GraduationCap,
   UploadCloud, RefreshCw, CalendarCheck, Trophy, Pizza,
   CheckCircle2, Circle, Search, Award, Plus, Trash2, Pencil,
-  ChevronDown, ChevronUp, ChevronsUp, ChevronsDown, Download, Upload, Settings, AlertTriangle, Users, BookOpen, Copy, Wallet,
-  PackageCheck, Inbox, Mail, Printer,
+  ChevronDown, ChevronUp, Download, Upload, Settings, AlertTriangle, Users, BookOpen, Copy, Wallet,
+  PackageCheck, Inbox, ExternalLink, Ban, Mail, Printer,
 } from "lucide-react";
 
 /* ============================================================
@@ -32,9 +41,9 @@ const STYLE = `
   background:${T.paper};min-height:100vh;display:flex;line-height:1.45;-webkit-font-smoothing:antialiased}
 .gcs button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
 .gcs :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
-.disp{font-family:'Schibsted Grotesk',system-ui,sans-serif;letter-spacing:-.02em}
-.mono{font-family:'IBM Plex Mono',monospace}
-.eyebrow{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;
+.disp{font-family:'Schibsted Grotesk', Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;letter-spacing:-.02em}
+.mono{font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+.eyebrow{font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:11px;letter-spacing:.14em;
   text-transform:uppercase;color:${T.muted}}
 
 /* shell */
@@ -49,14 +58,12 @@ const STYLE = `
 .navitem.on{background:var(--accent);color:#fff}
 .navitem.on svg{color:#fff}
 .main{flex:1;min-width:0;display:flex;flex-direction:column;position:relative}
-.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;
-  padding:18px 34px;border-bottom:1px solid ${T.hairline};background:${T.paper};
-  position:sticky;top:0;z-index:5}
+/* The top bar carries state, not a title: which cycle is open and whether the
+   work is saved. The page's own heading names the page, once. */
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:12px 34px;border-bottom:1px solid ${T.hairline};background:${T.paper};
+  position:sticky;top:0;z-index:5;min-height:52px}
 .content{padding:30px 34px 60px;max-width:1160px;width:100%}
-.skin{display:inline-flex;background:${T.surface};border:1px solid ${T.hairline};
-  border-radius:999px;padding:3px}
-.skin button{padding:6px 14px;border-radius:999px;font-size:12.5px;font-weight:600;color:${T.muted}}
-.skin button.on{color:#fff}
 
 /* primitives */
 .card{background:${T.surface};border:1px solid ${T.hairline};border-radius:18px;padding:20px}
@@ -64,23 +71,34 @@ const STYLE = `
 .sub{color:${T.muted};font-size:14px;margin-top:3px}
 .grid{display:grid;gap:16px}
 .pill{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;
-  padding:3px 9px;border-radius:999px;font-family:'IBM Plex Mono',monospace}
+  padding:3px 9px;border-radius:999px;font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
 .btn{display:inline-flex;align-items:center;gap:7px;background:var(--accent);color:#fff;
   font-weight:600;font-size:13px;padding:8px 14px;border-radius:999px;transition:.12s}
 .btn:hover{filter:brightness(.93)}
 .btn.ghost{background:transparent;color:${T.ink};border:1px solid ${T.hairline}}
 .btn.ghost:hover{background:${T.paper};filter:none}
-.stat .n{font-family:'Schibsted Grotesk';font-size:38px;font-weight:800;letter-spacing:-.03em;line-height:1}
+.stat .n{font-family:'Schibsted Grotesk', Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;font-size:38px;font-weight:800;letter-spacing:-.03em;line-height:1}
 .stat .l{font-size:12.5px;color:${T.muted};margin-top:7px}
 table{width:100%;border-collapse:collapse}
-th{font-family:'IBM Plex Mono';font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+/* Tables whose cells are all full-width inputs: size the columns explicitly. */
+.fixedtable{table-layout:fixed;min-width:760px}
+.fixedtable td{overflow:hidden}
+th{font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
   color:${T.muted};text-align:left;padding:10px 12px;border-bottom:1px solid ${T.hairline};font-weight:500}
 td{padding:11px 12px;border-bottom:1px solid ${T.hairline};font-size:13.5px;vertical-align:middle}
 tr:last-child td{border-bottom:none}
 .scorebox{width:54px;padding:5px 7px;border:1px solid ${T.hairline};border-radius:8px;
-  font-family:'IBM Plex Mono';font-size:13px;text-align:center;background:${T.paper}}
-.mini{font-size:11px;font-weight:600;padding:4px 9px;border-radius:999px;border:1px solid ${T.hairline};
-  background:${T.surface};color:${T.muted}}
+  font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:13px;text-align:center;background:${T.paper}}
+.mini{font-size:11px;font-weight:600;padding:5px 10px;border-radius:999px;border:1px solid ${T.hairline};
+  background:${T.surface};color:${T.muted};min-height:26px}
+/* Every icon-only control clears the 24px minimum target. The glyph keeps its
+   size; the padding does the work, so nothing gets visually heavier. */
+.iconbtn{display:inline-grid;place-items:center;min-width:28px;min-height:28px;
+  border-radius:8px;transition:.12s}
+.iconbtn:hover:not(:disabled){background:${T.paper};color:${T.ink}}
+/* Checklist tick and the stage arrows are hit as often as anything here. */
+.chk button[title="Check off"]{min-width:28px;min-height:28px;display:grid;place-items:center;border-radius:8px}
+.chk button[title="Check off"]:hover{background:${T.paper}}
 .mini.on{border-color:var(--accent);color:var(--accent);background:${T.surface}}
 .col{background:${T.paper};border:1px solid ${T.hairline};border-radius:14px;padding:12px;min-width:0}
 .board{display:grid;grid-template-columns:repeat(6,minmax(158px,1fr));gap:10px;overflow-x:auto;padding-bottom:6px}
@@ -94,7 +112,7 @@ tr:last-child td{border-bottom:none}
 .track{flex:1;height:9px;border-radius:999px;background:${T.hairline};overflow:hidden}
 .track>div{height:100%;border-radius:999px;background:var(--accent)}
 .utilbtn{display:none}
-.savechip{display:inline-flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;
+.savechip{display:inline-flex;align-items:center;gap:6px;font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size:11px;color:${T.muted};white-space:nowrap}
 .utilpanel{position:absolute;right:16px;top:60px;z-index:20;background:${T.surface};
   border:1px solid ${T.hairline};border-radius:14px;padding:12px;min-width:230px;
@@ -104,7 +122,12 @@ tr:last-child td{border-bottom:none}
    onto their own line rather than widening the page where there is not. */
 .callrow{flex-wrap:wrap}
 .callrow .nums{white-space:nowrap}
-@media(max-width:520px){.callrow .nums{white-space:normal}}
+/* On a phone the figures take their own line under the name, instead of
+   squeezing the name to one word per line beside them. */
+@media(max-width:520px){
+  .callrow .nums{white-space:normal;flex:1 1 100%}
+  .callrow.withdot .nums{padding-left:19px}
+}
 
 @media(max-width:860px){
   /* The session row's columns are fixed-width and total more than a phone
@@ -112,6 +135,8 @@ tr:last-child td{border-bottom:none}
   .sessionrow{flex-wrap:wrap}
 }
 @media(max-width:1000px){
+  .gcs .dashfigures{order:-1}
+  .gcs .wheelcard svg{max-width:230px !important}
   /* Inline grid-template-columns is set per screen, so it has to be overridden
      here to let two- and three-column layouts stack on small viewports. */
   .gcs .grid.resp{grid-template-columns:1fr !important}
@@ -126,6 +151,7 @@ tr:last-child td{border-bottom:none}
   .sidefoot{display:none}
   .navitem{width:auto;white-space:nowrap;flex:0 0 auto;padding:8px 11px}
   .content,.topbar{padding-left:18px;padding-right:18px}
+  .topbar{top:var(--side-h,0px)}
 }
 .drop{border:1.5px dashed ${T.hairline};border-radius:14px;padding:15px 16px;display:flex;
   align-items:center;gap:13px;background:${T.surface};transition:.12s;cursor:pointer;width:100%;text-align:left}
@@ -138,26 +164,32 @@ tr:last-child td{border-bottom:none}
   font-size:13.5px;cursor:pointer;width:100%;text-align:left;background:none}
 .chk:last-child{border-bottom:none}
 .chk.done .lbl{text-decoration:line-through;color:${T.muted}}
-.chk .owner{font-size:10.5px;color:${T.muted};margin-left:auto;font-family:'IBM Plex Mono';white-space:nowrap}
+.chk .owner{font-size:10.5px;color:${T.muted};margin-left:auto;font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;white-space:nowrap}
 .chip{font-size:12px;font-weight:600;padding:6px 12px;border-radius:999px;border:1px solid ${T.hairline};
   background:${T.surface};color:${T.muted};max-width:230px;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;vertical-align:middle}
 .chip.on{border-color:var(--accent);color:#fff;background:var(--accent)}
 .chipx{display:inline-flex;align-items:center;gap:7px;max-width:300px}
 .chipx .lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.chipx .n{flex:0 0 auto;font-family:'IBM Plex Mono',monospace;font-size:10px;opacity:.85}
+.chipx .n{flex:0 0 auto;font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:10px;opacity:.85}
 .chiprow{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-.calstrip{display:grid;grid-template-columns:repeat(12,1fr);gap:6px;overflow-x:auto}
-.calcell{border:1px solid ${T.hairline};border-radius:10px;padding:8px 6px;min-height:78px;
-  background:${T.surface};min-width:62px}
-.calcell .mo{font-family:'IBM Plex Mono';font-size:10px;color:${T.muted};text-transform:uppercase;letter-spacing:.06em}
+/* Twelve months in a row left each about 66px of text width, and "Homecoming"
+   came out as "Homecomin". Below 1200px the year splits into two rows of six —
+   Sep-Feb and Mar-Aug, which is also how the programme's two seasons fall. */
+.calstrip{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:6px}
+@media(max-width:1200px){.calstrip{grid-template-columns:repeat(6,minmax(0,1fr))}}
+@media(max-width:560px){.calstrip{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.calcell{border:1px solid ${T.hairline};border-radius:10px;padding:8px 5px;min-height:78px;
+  background:${T.surface};min-width:0}
+.calcell .mo{font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:10px;color:${T.muted};text-transform:uppercase;letter-spacing:.06em}
 .calcell.cur{background:${T.paper};border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
-.evt{font-size:10px;font-weight:700;margin-top:5px;padding:3px 5px;border-radius:6px;line-height:1.15;color:#fff}
+.evt{font-size:10px;font-weight:700;margin-top:5px;padding:3px 4px;border-radius:6px;line-height:1.2;color:#fff;
+  overflow-wrap:anywhere;hyphens:auto}
 .search{display:flex;align-items:center;gap:8px;border:1px solid ${T.hairline};border-radius:11px;
   padding:9px 12px;background:${T.surface};max-width:340px}
 .search input{border:none;outline:none;font-family:inherit;font-size:13px;width:100%;background:transparent;color:${T.ink}}
 .scards{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:13px}
-.award{font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;font-family:'IBM Plex Mono';color:#fff}
+.award{font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;color:#fff}
 
 /* inline fields — focus styling in CSS rather than by mutating the DOM node */
 .einput{padding:6px 8px;border:1px solid transparent;border-radius:8px;font-family:inherit;
@@ -172,7 +204,7 @@ tr:last-child td{border-bottom:none}
 .notefield::placeholder{color:#A8A29C}
 .notefield:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px ${T.hairline}}
 .datefield{padding:5px 8px;border:1px solid ${T.hairline};border-radius:8px;font-size:12px;
-  background:${T.surface};color:${T.ink};font-family:'IBM Plex Mono',monospace}
+  background:${T.surface};color:${T.ink};font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
 .datefield:focus{outline:none;border-color:var(--accent)}
 
 /* Money input — boxed like the date beside it. Unboxed, a bare number next to
@@ -180,7 +212,7 @@ tr:last-child td{border-bottom:none}
    in, and amounts end up typed into the note. */
 .moneyfield{display:inline-flex;align-items:center;gap:1px;padding:0 7px;
   border:1px solid ${T.hairline};border-radius:8px;background:${T.surface};transition:.12s}
-.moneyfield .cur{font-family:'IBM Plex Mono',monospace;font-size:12px;color:${T.muted}}
+.moneyfield .cur{font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:12px;color:${T.muted}}
 .moneyfield .einput{padding:5px 2px}
 .moneyfield .einput:hover,.moneyfield .einput:focus{border-color:transparent;background:transparent;box-shadow:none}
 .moneyfield:focus-within{border-color:var(--accent)}
@@ -196,7 +228,7 @@ tr:last-child td{border-bottom:none}
   padding:4px 14px 10px;overflow-x:auto}
 .callgroup+.callband{margin-top:20px}
 .calltag{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:999px;
-  font-family:'IBM Plex Mono',monospace;color:#fff;white-space:nowrap}
+  font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;color:#fff;white-space:nowrap}
 
 /* deliverables */
 .delrow{display:flex;align-items:flex-start;gap:12px;padding:10px 0;
@@ -206,7 +238,7 @@ tr:last-child td{border-bottom:none}
 .delrow>.pill{flex:0 0 132px;justify-content:center;margin-top:1px}
 @media(max-width:640px){.delrow>.pill{flex:0 0 auto}}
 .badge{display:inline-grid;place-items:center;min-width:17px;height:17px;padding:0 5px;
-  border-radius:999px;font-size:10px;font-weight:700;font-family:'IBM Plex Mono',monospace;color:#fff}
+  border-radius:999px;font-size:10px;font-weight:700;font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;color:#fff}
 .empty{color:${T.muted};font-size:13px;padding:14px 0;text-align:center}
 
 `;
@@ -283,7 +315,7 @@ const PIZZA = [
   { title: "Pizza Q&A · Special call info", date: "Mar 5", time: "12:30", room: "EV-3.309", reg: 28, done: false },
 ];
 
-/* configurable calls — each has its own topic + colour, like the switcher.
+/* configurable calls — each has its own topic + colour, which its teams carry.
    PALETTE is imported from ./lib/theme. */
 const SEED_CALLS = [
   { id: "regular", name: "Regular", topic: "Open to all GCS student projects", accent: "#912338", open: "Mar 2", close: "May 8", subs: 34, fixed: true },
@@ -508,6 +540,109 @@ const EInput = ({ value, onChange, placeholder, w, mono, align, title, ariaLabel
   />
 );
 
+/**
+ * Panel scoring for one record.
+ *
+ * Shows the total, and opens into one box per judge. Entering a breakdown
+ * makes the total derived and read-only, so the two can never disagree; a
+ * record that only has the old single figure keeps it until someone opens
+ * the panel and enters the parts.
+ */
+function ScorePanel({ rec, panel, onChange, label }) {
+  const [open, setOpen] = useState(false);
+  const parts = judgeScores(rec, panel);
+  const breakdown = hasBreakdown(rec);
+  const total = totalScore(rec, panel);
+  const max = panel * JUDGE_MAX;
+  const inCount = judgesIn(rec, panel);
+
+  const setPart = (i, raw) => {
+    const digits = raw.replace(/[^\d]/g, "").slice(0, 1);
+    const next = [...parts];
+    next[i] = digits === "" ? "" : Math.min(Number(digits), JUDGE_MAX);
+    onChange({ scores: next.map((v) => (v === "" ? null : v)) });
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+        {breakdown ? (
+          <span className="scorebox" title={`Sum of ${inCount} of ${panel} judges`}
+            style={{ display: "inline-grid", placeItems: "center", fontWeight: 600 }}>{total}</span>
+        ) : (
+          <input className="scorebox" aria-label={label} value={rec.score ?? ""} placeholder="—"
+            onChange={(e) => { const v = e.target.value.replace(/[^\d]/g, "").slice(0, 2); onChange({ score: v === "" ? "" : Math.min(Number(v), max) }); }} />
+        )}
+        <button className="mini" onClick={() => setOpen((o) => !o)}
+          title={breakdown ? "Per-judge scores" : "Enter each judge's score instead of one total"}
+          style={breakdown ? { borderColor: accentless(inCount, panel), color: accentless(inCount, panel) } : undefined}>
+          {breakdown ? `${inCount}/${panel} judges` : "By judge"}
+        </button>
+      </div>
+      {open && (
+        <div style={{ display: "flex", gap: 4, marginTop: 7, flexWrap: "wrap", alignItems: "center" }}>
+          {parts.map((v, i) => (
+            <input key={i} className="scorebox" value={v} placeholder="–"
+              aria-label={`Judge ${i + 1} score out of ${JUDGE_MAX}`}
+              title={`Judge ${i + 1} · out of ${JUDGE_MAX}`}
+              onChange={(e) => setPart(i, e.target.value)}
+              style={{ width: 34, padding: "4px 2px" }} />
+          ))}
+          <span className="mono" style={{ fontSize: 10.5, color: T.muted, marginLeft: 4 }}>
+            /{JUDGE_MAX} each · {total ?? 0}/{max}
+          </span>
+          {breakdown && (
+            <button className="mini" title="Clear the breakdown and go back to one typed total"
+              onClick={() => { onChange({ scores: [] }); setOpen(false); }}>Clear</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+/* Amber until every judge is in, green once the panel is complete. */
+const accentless = (inCount, panel) => (inCount >= panel ? T.ok : T.warnInk);
+
+/**
+ * A list of document links.
+ *
+ * The agreement, the budget sheet, the pitch deck all live in Drive; the app
+ * only needs to point at them. Anything that is not http(s) after
+ * normalisation is held as text and never rendered as a live link.
+ */
+function LinkList({ links, onChange, addLabel = "Link", placeholder = "Paste a Drive or SharePoint link" }) {
+  const list = links || [];
+  const set = (i, patch) => onChange(list.map((l, j) => (j === i ? { ...l, ...patch } : l)));
+  return (
+    <>
+      {list.map((l, i) => {
+        const href = safeUrl(l.url);
+        return (
+          <div key={l.id || i} style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 6 }}>
+            <EInput value={l.label} onChange={(v) => set(i, { label: v })} placeholder="What it is" w="38%" ariaLabel="Link label" />
+            <EInput value={l.url} onChange={(v) => set(i, { url: v })} placeholder={placeholder} ariaLabel="Link address" />
+            {href ? (
+              <a href={href} target="_blank" rel="noopener noreferrer" className="mini"
+                 title={href} style={{ textDecoration: "none", whiteSpace: "nowrap", flex: "0 0 auto" }}>
+                <ExternalLink size={11} style={{ verticalAlign: -1, marginRight: 4 }} />{linkHost(l.url) || "Open"}
+              </a>
+            ) : (
+              <span className="mini" style={{ flex: "0 0 auto", opacity: l.url ? 1 : 0.5, borderStyle: "dashed" }}
+                    title={l.url ? "Not a web address — nothing to open" : "No address yet"}>
+                {l.url ? "Not a link" : "Empty"}
+              </span>
+            )}
+            <IconBtn title="Remove link" onClick={() => onChange(list.filter((_, j) => j !== i))}><Trash2 size={13} /></IconBtn>
+          </div>
+        );
+      })}
+      <button className="mini" style={{ marginTop: 8 }} onClick={() => onChange([...list, { id: uid(), label: "", url: "" }])}>
+        <Plus size={11} style={{ verticalAlign: -1, marginRight: 3 }} />{addLabel}
+      </button>
+    </>
+  );
+}
+
 /* Icon-only control. Every one carries a label so the screen is navigable
    without sight of the glyph. */
 const IconBtn = ({ onClick, title, children, color, disabled, style }) => (
@@ -516,8 +651,9 @@ const IconBtn = ({ onClick, title, children, color, disabled, style }) => (
     title={title}
     aria-label={title}
     disabled={disabled}
+    className="iconbtn"
     style={{
-      color: color || T.muted, display: "grid", placeItems: "center", padding: 3,
+      color: color || T.muted,
       opacity: disabled ? 0.3 : 1, cursor: disabled ? "default" : "pointer", ...style,
     }}
   >
@@ -556,7 +692,7 @@ function Wheel({ accent }) {
         const isCur = i === curIdx;
         return (
           <text key={m} x={p.x} y={p.y + 4} textAnchor="middle"
-            fontFamily="IBM Plex Mono" fontSize="11"
+            fontFamily={MONO} fontSize="11"
             fontWeight={isCur ? 700 : 400} fill={isCur ? accent : T.muted}>{m}</text>
         );
       })}
@@ -567,8 +703,8 @@ function Wheel({ accent }) {
         return <circle key={e.label} cx={p.x} cy={p.y} r="4.5" fill={e.color} stroke="#fff" strokeWidth="2" />;
       })}
       {/* center */}
-      <text x={cx} y={cy - 6} textAnchor="middle" fontFamily="Schibsted Grotesk" fontWeight="800" fontSize="34" fill={T.ink}>{CURRENT.toUpperCase()}</text>
-      <text x={cx} y={cy + 16} textAnchor="middle" fontFamily="IBM Plex Mono" fontSize="9.5" letterSpacing="1.2" fill={accent}>{PHASE_SHORT}</text>
+      <text x={cx} y={cy - 6} textAnchor="middle" fontFamily={DISP} fontWeight="800" fontSize="34" fill={T.ink}>{CURRENT.toUpperCase()}</text>
+      <text x={cx} y={cy + 16} textAnchor="middle" fontFamily={MONO} fontSize="9.5" letterSpacing="1.2" fill={accent}>{PHASE_SHORT}</text>
     </svg>
   );
 }
@@ -699,6 +835,15 @@ export default function App() {
   /* ---- cycles: registry is global; everything operational is keyed by the viewed cycle ---- */
   const [cycles, setCycles, saveCycles] = useCloudSection("cycles", SEED_CYCLES, "global");
   const saveState = useSaveStatus();
+  const sideRef = useRef(null);
+  const [sideH, setSideH] = useState(0);
+  useEffect(() => {
+    const el = sideRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setSideH(Math.round(el.getBoundingClientRect().height)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const [utilOpen, setUtilOpen] = useState(false);
   const activeCycle = cycles.find((c) => c.status === "active") || cycles[0] || SEED_CYCLES[0];
   const [viewCycleId, setViewCycleId] = useState(null); // null = follow the active cycle
@@ -709,7 +854,6 @@ export default function App() {
   const [newCyLabel, setNewCyLabel] = useState("");
 
   const [callList, setCallList] = useCloudSection("calls", SEED_CALLS, cycleId);
-  const [activeCall, setActiveCall] = useState("regular");
   const [draft, setDraft] = useState({ open: false, name: "", topic: "", accent: PALETTE[1].hex });
   const [sessions, setSessions] = useCloudSection("sessions", SESSIONS, cycleId);
   const [psDraft, setPsDraft] = useState({ date: "", title: "", who: "" });
@@ -747,14 +891,12 @@ export default function App() {
   const [cohortsTab, setCohortsTab] = useState("success");
   const [cohortFilter, setCohortFilter] = useState("all");
   const [query, setQuery] = useState("");
-  /* The themed accent follows the selected call. If that call was deleted or
-     the cycle's call list never had a "regular", fall back to the first call
-     that does exist rather than leaving the switcher with nothing selected. */
-  const accentObj = callList.find((c) => c.id === activeCall) || callList[0];
+  /* The app used to recolour itself from a Regular | Special switcher in the
+     top bar. It sat where a filter would sit, read like one, and filtered
+     nothing. Each team now carries its own call's colour, so the chrome keeps
+     one steady accent: the Regular call's. */
+  const accentObj = callList.find((c) => c.id === "regular") || callList[0];
   const accent = accentObj ? accentObj.accent : T.burgundy;
-  useEffect(() => {
-    if (callList.length && !callList.some((c) => c.id === activeCall)) setActiveCall(callList[0].id);
-  }, [callList, activeCall]);
 
   /* Deliverables: derived once and reused by the dashboard, the nav badge and
      the Teams screen, so every surface agrees on what is outstanding. */
@@ -1047,8 +1189,8 @@ export default function App() {
         ? profileCallFilter
         : (accentObj ? accentObj.id : "regular")),
     members: "", dept: "", supervisor: "", mentor: "", finance: "pending", notes: "",
-    budget: "", spent: "",
-    meetings: [], deliverables: [],
+    budget: "", spent: "", status: "active",
+    meetings: [], deliverables: [], links: [],
   });
   const missingProfiles = teams.filter(
     (t) => t.outcome === "select" && !profiles.some((p) => p.teamId === t.id || (p.name && p.name === t.name))
@@ -1100,7 +1242,7 @@ export default function App() {
   const addMissingResults = () => {
     if (!missingResults.length) return;
     setResults((rs) => [...rs, ...missingResults.map((t) => ({
-      id: uid(), teamId: t.id, team: t.name, pitched: false, awards: [], phase2: false, amount: "", note: "",
+      id: uid(), teamId: t.id, team: t.name, pitched: false, score: "", scores: [], awards: [], phase2: false, amount: "", note: "",
     }))]);
   };
   const updResult = (id, patch) => setResults((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -1421,7 +1563,15 @@ export default function App() {
      field, so both read as zero. */
   const budgetOf = (p) => Number(p.budget) || 0;
   const spentOf = (p) => Number(p.spent) || 0;
-  const cohortBudget = visibleProfiles.reduce(
+  const seedTotals = profiles.filter(isRunning).reduce(
+    (a, p) => ({ allocated: a.allocated + budgetOf(p), spent: a.spent + spentOf(p) }),
+    { allocated: 0, spent: 0 }
+  );
+  const p2Totals = phase2.filter((p) => p.status !== "completed").reduce(
+    (a, p) => ({ awarded: a.awarded + (Number(p.awarded) || 0), paid: a.paid + p2Paid(p) }),
+    { awarded: 0, paid: 0 }
+  );
+  const cohortBudget = visibleProfiles.filter(isRunning).reduce(
     (a, p) => {
       const b = budgetOf(p), sp = spentOf(p);
       return { allocated: a.allocated + b, spent: a.spent + sp, withBudget: a.withBudget + (b > 0 ? 1 : 0), over: a.over + (b > 0 && sp > b ? 1 : 0) };
@@ -1503,12 +1653,6 @@ export default function App() {
     const j = i + dir;
     if (j < 0 || j >= ss.length) return ss;
     const c = [...ss]; [c[i], c[j]] = [c[j], c[i]]; return c;
-  });
-  const moveSessionEnd = (i, toTop) => setSessions((ss) => {
-    if (i < 0 || i >= ss.length) return ss;
-    const c = [...ss]; const [it] = c.splice(i, 1);
-    if (toTop) c.unshift(it); else c.push(it);
-    return c;
   });
 
   /* Print the finalized programming as a "Calendar of Activities" sheet
@@ -1601,6 +1745,18 @@ export default function App() {
   };
 
   const [cohortData, setCohortData, saveCohorts] = useCloudSection("cohorts", COHORTS, "global");
+  /* The Cohorts library kept its own Phase II tick, separate from the Phase II
+     list that actually tracks the money — so Re:CON and GoniVision, funded at
+     $25,000 each, showed as never having reached Phase II and fell out of the
+     "Phase II only" filter. The Phase II list is now the authority: a library
+     team it funds is Phase II, whatever the old tick says. The tick remains for
+     past teams funded before this app kept Phase II records. */
+  const fundedNames = useMemo(
+    () => new Set((phase2 || []).map((p) => String(p.team || "").trim().toLowerCase()).filter(Boolean)),
+    [phase2]
+  );
+  const isFunded = (t) => fundedNames.has(String(t.name || "").trim().toLowerCase());
+  const inPhase2 = (t) => !!t.phase2 || isFunded(t);
   const [editTeam, setEditTeam] = useState(null);
   const [cohortMsg, setCohortMsg] = useState(null);
   /* Cohort teams are nested one level down, so they need their own stamp.
@@ -1776,7 +1932,7 @@ export default function App() {
   const utilPanel = (
     <>
       <button onClick={() => setCyOpen((o) => !o)} title="Switch cycle"
-        style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", textAlign: "left" }}>
+        style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", textAlign: "left", minHeight: 28, padding: "2px 0" }}>
         <span className="eyebrow">Cycle {viewedCycle.label}</span>
         <ChevronDown size={12} style={{ color: T.muted, transform: cyOpen ? "rotate(180deg)" : "none", transition: ".12s" }} />
       </button>
@@ -1790,9 +1946,9 @@ export default function App() {
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.label}</span>
                 <span className="mono" style={{ fontSize: 10, color: c.status === "active" ? T.ok : T.muted }}>{c.status === "active" ? "active" : "past"}</span>
               </button>
-              <button onClick={() => renameCycle(c)} title="Rename cycle" style={{ color: T.muted, display: "grid", placeItems: "center", padding: 3 }}><Pencil size={11} /></button>
+              <IconBtn onClick={() => renameCycle(c)} title="Rename cycle"><Pencil size={11} /></IconBtn>
               {c.id !== activeCycle.id && (
-                <button onClick={() => deleteCycle(c)} title="Delete cycle" style={{ color: T.muted, display: "grid", placeItems: "center", padding: 3 }}><Trash2 size={11} /></button>
+                <IconBtn onClick={() => deleteCycle(c)} title="Delete cycle"><Trash2 size={11} /></IconBtn>
               )}
             </div>
           ))}
@@ -1825,7 +1981,31 @@ export default function App() {
     </>
   );
 
-  const saveChip = saveState.failed > 0 ? (
+  /* Someone else wrote to a screen we were editing. Their version is on the
+     server and ours is held locally; both are real work, so the choice goes to
+     the person who is here rather than to whoever happened to save last. */
+  const resolveConflict = async () => {
+    const names = [...new Set(conflictedSections())];
+    const list = names.length ? names.join(", ") : "this screen";
+    const choice = await ui.choose(
+      `Someone else saved changes to ${list} while you were editing. Nothing of theirs has been overwritten, and your edits are still on screen.\n\nTake their version and lose your unsaved edits, or keep yours and write over theirs?`,
+      { title: "Changed by someone else", confirmLabel: "Take theirs", altLabel: "Keep mine", cancelLabel: "Decide later" }
+    );
+    if (choice === true) {
+      dropConflicts();
+      window.location.reload();
+    } else if (choice === "alt") {
+      if (await forceConflicts()) ui.toast("Your version was saved over theirs.");
+      else await ui.alert("Couldn't save. Check your connection and try again.");
+    }
+  };
+
+  const saveChip = saveState.conflicted > 0 ? (
+    <button className="savechip" onClick={resolveConflict} style={{ color: T.warnInk, fontWeight: 600 }}
+      title="Someone else saved this screen while you were editing">
+      <AlertTriangle size={12} /> Changed by someone else
+    </button>
+  ) : saveState.failed > 0 ? (
     <button className="savechip" onClick={retryFailedSaves} title="A change didn't save — click to retry" style={{ color: T.danger }}>
       <AlertTriangle size={12} /> Not saved · Retry
     </button>
@@ -1836,12 +2016,12 @@ export default function App() {
   );
 
   return (
-    <div className="gcs" style={{ "--accent": accent }}>
+    <div className="gcs" style={{ "--accent": accent, "--side-h": `${sideH}px` }}>
       <style>{STYLE}</style>
       <DialogHost />
 
       {/* sidebar */}
-      <aside className="side">
+      <aside className="side" ref={sideRef}>
         <button className="brand" onClick={() => setView("dashboard")} style={{ background: "none", border: "none", textAlign: "left", width: "100%" }}>
           <div className="brandmark">IF</div>
           <div className="brandtext">
@@ -1866,20 +2046,11 @@ export default function App() {
       {/* main */}
       <div className="main">
         <div className="topbar">
-          <div>
-            <div className="eyebrow">Cycle {viewedCycle.label}{isPastView ? " · past" : ""}</div>
-            <div className="disp" style={{ fontWeight: 700, fontSize: 18, marginTop: 2 }}>
-              {(NAV.find((n) => n.id === view) || NAV[0]).label}
-            </div>
+          <div className="eyebrow" style={{ whiteSpace: "nowrap" }}>
+            Cycle {viewedCycle.label}{isPastView ? " · past" : ""}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", justifyContent: "flex-end" }}>
             {saveChip}
-            <div className="skin">
-              {callList.map((c) => (
-                <button key={c.id} className={activeCall === c.id ? "on" : ""} style={activeCall === c.id ? { background: c.accent } : {}} onClick={() => setActiveCall(c.id)} title={c.topic}>{c.name}</button>
-              ))}
-              <button onClick={() => { setView("calls"); setDraft((d) => ({ ...d, open: true })); }} title="Add a call" style={{ padding: "6px 12px", color: T.muted, fontWeight: 800 }}>+</button>
-            </div>
             <button className="utilbtn mini" onClick={() => setUtilOpen((o) => !o)} title="Cycle, backup and account"
               style={{ alignItems: "center", gap: 5 }}>
               <Settings size={13} /> Menu
@@ -1892,7 +2063,7 @@ export default function App() {
         )}
 
         {isPastView && (
-          <div style={{ background: T.tint, color: T.burgundy, padding: "8px 34px", fontSize: 12.5, fontFamily: "'IBM Plex Mono', monospace", display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ background: T.tint, color: T.burgundy, padding: "8px 34px", fontSize: 12.5, fontFamily: MONO, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
             <span>Viewing {viewedCycle.label} · past cycle — edits save to that cycle.</span>
             <button onClick={() => setViewCycleId(null)} style={{ textDecoration: "underline", fontWeight: 700, color: T.burgundy }}>
               Back to {activeCycle.label}
@@ -1907,7 +2078,7 @@ export default function App() {
               <div className="sub">One cohort cycle, two parallel calls. Right now: {(PHASE_BY_MONTH[CURRENT] || "").toLowerCase()}.</div>
 
               <div className="grid resp" style={{ gridTemplateColumns: "1.1fr 1.4fr", marginTop: 22, alignItems: "stretch" }}>
-                <div className="card" style={{ display: "flex", flexDirection: "column", justifyContent: "center" }}>
+                <div className="card wheelcard" style={{ display: "flex", flexDirection: "column", justifyContent: "center" }}>
                   <Wheel accent={accent} />
                   <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 6, flexWrap: "wrap" }}>
                     <Legend color={accent} label="Kickoff · Demo Day" />
@@ -1915,7 +2086,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
+                <div className="dashfigures" style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
                   <div className="grid" style={{ gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)" }}>
                     <Stat n={counts.submitted} l="Proposals submitted" accent={accent} />
                     <Stat n={counts.shortlisted} l="Shortlisted to interview" accent={accent} />
@@ -1928,7 +2099,7 @@ export default function App() {
                     <div className="eyebrow" style={{ marginBottom: 10 }}>By call</div>
                     {allGroups.map(({ call, teams: ts }) => (
                       <button key={call.id} onClick={() => { setView("selection"); setCallFilter(call.id); }}
-                        title={`Open the ${call.name} call in Selection`} className="callrow"
+                        title={`Open the ${call.name} call in Selection`} className="callrow withdot"
                         style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", padding: "9px 0", borderBottom: `1px solid ${T.hairline}` }}>
                         <span style={{ width: 9, height: 9, borderRadius: 999, background: call.accent, flex: "0 0 9px" }} />
                         <span style={{ flex: 1, minWidth: 0 }}>
@@ -1940,6 +2111,38 @@ export default function App() {
                         </span>
                       </button>
                     ))}
+                  </div>
+                  {/* Both phases now carry money; the landing page showed none of it. */}
+                  <div className="card">
+                    <div className="eyebrow" style={{ marginBottom: 10 }}>Funds</div>
+                    {seedTotals.allocated === 0 && p2Totals.awarded === 0 ? (
+                      <div style={{ color: T.muted, fontSize: 13 }}>No budgets or awards recorded yet.</div>
+                    ) : (
+                      <>
+                        {[
+                          { key: "p1", label: "Phase I seed budgets", scope: `cycle ${viewedCycle.label}`,
+                            used: seedTotals.spent, total: seedTotals.allocated, verb: "spent", go: "teams" },
+                          { key: "p2", label: "Phase II awards", scope: "active teams",
+                            used: p2Totals.paid, total: p2Totals.awarded, verb: "disbursed", go: "phase2" },
+                        ].filter((r) => r.total > 0 || r.used > 0).map((r, i, arr) => {
+                          const over = r.used > r.total;
+                          const pct = r.total ? Math.min(Math.round((r.used / r.total) * 100), 100) : 0;
+                          return (
+                            <button key={r.key} onClick={() => setView(r.go)} title={`Open ${r.go === "teams" ? "Phase I" : "Phase II"} teams`}
+                              style={{ display: "block", width: "100%", textAlign: "left", padding: "4px 0", marginTop: i ? 12 : 0 }}>
+                              <div className="callrow" style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 7 }}>
+                                <span style={{ fontWeight: 600, fontSize: 13 }}>{r.label} <span style={{ color: T.muted, fontWeight: 400, fontSize: 12 }}>· {r.scope}</span></span>
+                                <span className="mono nums" style={{ fontSize: 11.5, color: over ? T.danger : T.muted }}>
+                                  ${r.used.toLocaleString()} {r.verb} of ${r.total.toLocaleString()}
+                                </span>
+                              </div>
+                              <div className="track"><div style={{ width: pct + "%", background: over ? T.danger : accent }} /></div>
+                              {over && <div style={{ fontSize: 11.5, color: T.danger, marginTop: 4 }}>${(r.used - r.total).toLocaleString()} more {r.verb} than allocated</div>}
+                            </button>
+                          );
+                        })}
+                      </>
+                    )}
                   </div>
                   <div className="card">
                     <div className="eyebrow" style={{ marginBottom: 12 }}>Cycle {viewedCycle.label} · two seasons</div>
@@ -1973,14 +2176,15 @@ export default function App() {
           {view === "calls" && (
             <>
               <div className="h1 disp">Calls & promotion</div>
-              <div className="sub">Calls launch together each spring. Add a themed call, give it a topic and pick its colour — it appears in the switcher up top.</div>
+              <div className="sub">Calls launch together each spring. Add a themed call, give it a topic and pick its colour — its teams carry that colour everywhere they appear.</div>
               <div className="scards" style={{ marginTop: 20 }}>
                 {callList.map((c) => (
-                  <CallCard key={c.id} call={c} active={activeCall === c.id} palette={PALETTE}
+                  <CallCard key={c.id} call={c} palette={PALETTE}
+                    teamCount={teams.filter((t) => callFor(t, callList).id === c.id).length}
                     editing={editingCall === c.id}
                     onEdit={() => setEditingCall(editingCall === c.id ? null : c.id)}
                     onChange={(patch) => updCall(c.id, patch)}
-                    onUse={() => setActiveCall(c.id)}
+                    onOpen={() => { setCallFilter(c.id); setView("selection"); }}
                     onRemove={c.fixed ? null : async () => {
                       const attached = teams.filter((t) => callFor(t, callList).id === c.id).length
                         + profileRows.filter((p) => p.callId === c.id).length;
@@ -1992,7 +2196,6 @@ export default function App() {
                       );
                       if (!ok) return;
                       setCallList((cs) => cs.filter((x) => x.id !== c.id));
-                      if (activeCall === c.id) setActiveCall("regular");
                       if (callFilter === c.id) setCallFilter("all");
                       if (profileCallFilter === c.id) setProfileCallFilter("all");
                     }} />
@@ -2003,7 +2206,6 @@ export default function App() {
                     if (!name) return;
                     const id = "call-" + Date.now();
                     setCallList((cs) => [...cs, { id, name, topic: draft.topic.trim() || "Themed call", accent: draft.accent, open: "Mar 2", close: "May 8", subs: 0 }]);
-                    setActiveCall(id);
                     setDraft({ open: false, name: "", topic: "", accent: PALETTE[1].hex });
                   }} />
               </div>
@@ -2031,8 +2233,12 @@ export default function App() {
                 {classMsg && <div style={{ fontSize: 12, color: T.ok, marginBottom: 10 }}>{classMsg}</div>}
 
                 <div style={{ overflowX: "auto" }}>
-                  <table>
-                    <thead><tr><th>Course</th><th>Campus</th><th>Professor</th><th>Date</th><th>Advertised</th><th>Status</th><th></th></tr></thead>
+                  <table className="fixedtable">
+                    <colgroup>
+                      <col style={{ width: "34%" }} /><col style={{ width: "9%" }} /><col style={{ width: "17%" }} />
+                      <col style={{ width: "9%" }} /><col style={{ width: "17%" }} /><col style={{ width: "10%" }} /><col style={{ width: 40 }} />
+                    </colgroup>
+                    <thead><tr><th scope="col">Course</th><th scope="col">Campus</th><th scope="col">Professor</th><th scope="col">Date</th><th scope="col">Advertised</th><th scope="col">Status</th><th scope="col" aria-label="Remove" /></tr></thead>
                     <tbody>
                       {classes.map((p, i) => (
                         <tr key={p.rid || `class-${i}`}>
@@ -2058,7 +2264,7 @@ export default function App() {
                               {p.done ? <><Check size={11} style={{ verticalAlign: -1 }} /> Done</> : "Planned"}
                             </button>
                           </td>
-                          <td><button onClick={() => rmClass(i)} title="Remove" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button></td>
+                          <td><IconBtn onClick={() => rmClass(i)} title="Remove"><Trash2 size={14} /></IconBtn></td>
                         </tr>
                       ))}
                     </tbody>
@@ -2072,8 +2278,12 @@ export default function App() {
                   <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={addPizza}><Plus size={14} /> Add Q&amp;A</button>
                 </div>
                 <div style={{ overflowX: "auto" }}>
-                  <table>
-                    <thead><tr><th>Session</th><th>Date</th><th>Time</th><th>Room</th><th>Registered</th><th>Status</th><th></th></tr></thead>
+                  <table className="fixedtable">
+                    <colgroup>
+                      <col style={{ width: "36%" }} /><col style={{ width: "12%" }} /><col style={{ width: "11%" }} />
+                      <col style={{ width: "14%" }} /><col style={{ width: "11%" }} /><col style={{ width: "11%" }} /><col style={{ width: 40 }} />
+                    </colgroup>
+                    <thead><tr><th scope="col">Session</th><th scope="col">Date</th><th scope="col">Time</th><th scope="col">Room</th><th scope="col">Registered</th><th scope="col">Status</th><th scope="col" aria-label="Remove" /></tr></thead>
                     <tbody>
                       {pizza.map((p, i) => (
                         <tr key={p.rid || `pizza-${i}`}>
@@ -2087,7 +2297,7 @@ export default function App() {
                               {p.done ? <><Check size={11} style={{ verticalAlign: -1 }} /> Done</> : "Planned"}
                             </button>
                           </td>
-                          <td><button onClick={() => rmPizza(i)} title="Remove" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button></td>
+                          <td><IconBtn onClick={() => rmPizza(i)} title="Remove"><Trash2 size={14} /></IconBtn></td>
                         </tr>
                       ))}
                     </tbody>
@@ -2102,7 +2312,7 @@ export default function App() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
                 <div>
                   <div className="h1 disp">Selection pipeline</div>
-                  <div className="sub">Scores are mirrored from Airtable by hand — the sum of {JUDGES} judges scoring out of 5, so {MAX_SCORE} is the ceiling. Track who wants to interview each team, then take them to a decision.</div>
+                  <div className="sub">{JUDGES} judges score out of {JUDGE_MAX}, so {MAX_SCORE} is the ceiling. Enter the panel's scores one by one and the total is worked out for you — or type a total if that is all you have. Track who wants to interview each team, then take them to a decision.</div>
                 </div>
                 <div className="tabs">
                   <button className={selTab === "list" ? "on" : ""} onClick={() => setSelTab("list")}>Interview list</button>
@@ -2218,7 +2428,7 @@ export default function App() {
                                       value={callFor(t, callList).id}
                                       aria-label={`Call for ${t.name || "this team"}`}
                                       onChange={(e) => upd(t.id, { callId: e.target.value, cohort: undefined })}
-                                      style={{ fontFamily: "IBM Plex Mono", fontSize: 11.5, padding: "5px 7px", borderRadius: 8, background: T.surface, maxWidth: 130,
+                                      style={{ fontFamily: MONO, fontSize: 11.5, padding: "5px 7px", borderRadius: 8, background: T.surface, maxWidth: 130,
                                                border: `1px solid ${callFor(t, callList).accent}`, color: callFor(t, callList).accent, fontWeight: 600 }}>
                                       {callList.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                                       {callFor(t, callList).id === UNASSIGNED && <option value={UNASSIGNED}>Unassigned</option>}
@@ -2228,17 +2438,16 @@ export default function App() {
                                     <EInput value={(t.flaggedBy || []).join(", ")} onChange={(v) => upd(t.id, { flaggedBy: v.split(/[,;·]/).map((x) => x.trim()).filter(Boolean) })} placeholder="Judges, Program team" />
                                   </td>
                                   <td>
-                                    <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                                      <input className="scorebox" aria-label={`Score for ${t.name || "this team"}`} value={t.score ?? ""}
-                                        onChange={(e) => { const v = e.target.value.replace(/\D/g, "").slice(0, 2); upd(t.id, { score: v === "" ? "" : Math.min(Number(v), MAX_SCORE) }); }} placeholder="—" />
-                                      <span className="mono" style={{ fontSize: 10.5, color: T.muted }}>{t.score ? `${(Number(t.score) / JUDGES).toFixed(1)}/5` : ""}</span>
-                                    </div>
+                                    <ScorePanel rec={t} panel={JUDGES}
+                                      label={`Score for ${t.name || "this team"}`}
+                                      onChange={(patch) => upd(t.id, patch)} />
                                   </td>
-                                  <td><button onClick={() => cycleAgreed(t)} title="Click to cycle: pending → agreed → declined">{agreedPill(t.agreed)}</button></td>
+                                  <td><button onClick={() => cycleAgreed(t)} title="Click to cycle: pending → agreed → declined"
+                                        style={{ minHeight: 28, display: "inline-flex", alignItems: "center" }}>{agreedPill(t.agreed)}</button></td>
                                   <td style={{ minWidth: 118 }}><EInput value={t.date} onChange={(v) => upd(t.id, { date: v })} placeholder="Set date/time" mono /></td>
                                   <td>
                                     <select value={t.outcome ?? ""} aria-label={`Outcome for ${t.name || "this team"}`} onChange={(e) => upd(t.id, { outcome: e.target.value || null })}
-                                      style={{ fontFamily: "IBM Plex Mono", fontSize: 12, padding: "5px 7px", border: `1px solid ${T.hairline}`, borderRadius: 8, background: T.surface, color: T.ink }}>
+                                      style={{ fontFamily: MONO, fontSize: 12, padding: "5px 7px", border: `1px solid ${T.hairline}`, borderRadius: 8, background: T.surface, color: T.ink }}>
                                       <option value="">Decide…</option>
                                       <option value="select">Selected</option>
                                       <option value="waitlist">Waitlist</option>
@@ -2247,7 +2456,7 @@ export default function App() {
                                   </td>
                                   <td>
                                     <select value={t.stage} aria-label={`Next step for ${t.name || "this team"}`} onChange={(e) => upd(t.id, { stage: e.target.value })}
-                                      style={{ fontFamily: "IBM Plex Mono", fontSize: 12, padding: "5px 7px", border: `1px solid ${T.hairline}`, borderRadius: 8, background: T.surface, color: T.ink }}>
+                                      style={{ fontFamily: MONO, fontSize: 12, padding: "5px 7px", border: `1px solid ${T.hairline}`, borderRadius: 8, background: T.surface, color: T.ink }}>
                                       {STAGES.map((st) => <option key={st.id} value={st.id}>{st.label}</option>)}
                                     </select>
                                   </td>
@@ -2296,7 +2505,10 @@ export default function App() {
                                 <div style={{ fontWeight: 600, fontSize: 13 }}>{t.name || "Untitled"}</div>
                                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 7, gap: 6 }}>
                                   <span className="calltag" style={{ background: call.accent }}>{call.name}</span>
-                                  <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>{t.score != null && t.score !== "" ? `${t.score}/${MAX_SCORE}` : "—"}</span>
+                                  <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}
+                                    title={hasBreakdown(t) ? `${judgesIn(t, JUDGES)} of ${JUDGES} judges in` : undefined}>
+                                    {totalScore(t, JUDGES) != null ? `${totalScore(t, JUDGES)}/${MAX_SCORE}` : "—"}
+                                  </span>
                                 </div>
                                 <div style={{ display: "flex", gap: 6, marginTop: 9 }}>
                                   <button className="mini" aria-label="Move to previous stage" style={{ flex: 1, opacity: si === 0 ? 0.35 : 1 }} disabled={si === 0} onClick={() => upd(t.id, { stage: STAGES[si - 1].id })}>←</button>
@@ -2508,9 +2720,11 @@ export default function App() {
                                   <td style={{ minWidth: 160, fontWeight: 600 }}>{p.name || "Untitled team"}</td>
                                   <td className="mono">{out.length}</td>
                                   <td className="mono" style={{ color: T.muted }}>{all.length - out.length}/{all.length}</td>
-                                  <td>{worst
-                                    ? <Pill bg={worst.bg} fg={worst.fg}>{worst.label}</Pill>
-                                    : <Pill bg={T.okTint} fg={T.ok}><Check size={12} /> All in</Pill>}</td>
+                                  <td>{!isRunning(p)
+                                    ? <Pill bg={statusOf(p).bg} fg={statusOf(p).fg}><Ban size={12} /> {statusOf(p).label}</Pill>
+                                    : worst
+                                      ? <Pill bg={worst.bg} fg={worst.fg}>{worst.label}</Pill>
+                                      : <Pill bg={T.okTint} fg={T.ok}><Check size={12} /> All in</Pill>}</td>
                                   <td>
                                     <button className="mini" onClick={() => { setActiveProfileId(p.id); setProfileCallFilter("all"); setTeamsTab("profiles"); }}>Open</button>
                                   </td>
@@ -2574,15 +2788,25 @@ export default function App() {
                             <div className="chiprow">
                               {[...groupProfiles].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => {
                                 const worst = profileDeliverableState(p);
+                                const st = statusOf(p);
                                 const on = activeProfile && activeProfile.id === p.id;
+                                const running = isRunning(p);
+                                const hint = [p.name || "Untitled", st.id !== "active" ? st.label : null, worst ? worst.label : null]
+                                  .filter(Boolean).join(" — ");
                                 return (
-                                  <button key={p.id} title={worst ? `${p.name || "Untitled"} — ${worst.label}` : p.name || "Untitled"}
+                                  <button key={p.id} title={hint}
                                     className={"chip" + (on ? " on" : "")} onClick={() => setActiveProfileId(p.id)}
                                     style={on
                                       ? { display: "inline-flex", alignItems: "center", gap: 7, background: call.accent, borderColor: call.accent }
-                                      : { display: "inline-flex", alignItems: "center", gap: 7, borderLeft: `3px solid ${call.accent}` }}>
-                                    {worst && <span style={{ width: 7, height: 7, borderRadius: 999, background: on ? "#fff" : worst.fg, flex: "0 0 7px" }} />}
+                                      : { display: "inline-flex", alignItems: "center", gap: 7, borderLeft: `3px solid ${call.accent}`,
+                                          opacity: running ? 1 : 0.55,
+                                          textDecoration: running ? "none" : "line-through" }}>
+                                    {!running && <Ban size={11} style={{ flex: "0 0 auto", color: on ? "#fff" : T.muted }} />}
+                                    {running && worst && <span style={{ width: 7, height: 7, borderRadius: 999, background: on ? "#fff" : worst.fg, flex: "0 0 7px" }} />}
                                     {p.name || "Untitled"}
+                                    {st.id === "atrisk" && (
+                                      <span className="mono" style={{ fontSize: 9.5, color: on ? "#fff" : st.fg, opacity: on ? 0.9 : 1 }}>at risk</span>
+                                    )}
                                   </button>
                                 );
                               })}
@@ -2604,7 +2828,7 @@ export default function App() {
                                   aria-label={`Call for ${activeProfile.name || "this team"}`}
                                   title="Which call this team applied to — changing it moves the team to that group"
                                   onChange={(e) => setProfileCall(activeProfile.id, e.target.value)}
-                                  style={{ fontFamily: "IBM Plex Mono", fontSize: 11.5, padding: "5px 7px", borderRadius: 8, background: T.surface, maxWidth: 210,
+                                  style={{ fontFamily: MONO, fontSize: 11.5, padding: "5px 7px", borderRadius: 8, background: T.surface, maxWidth: 210,
                                            border: `1px solid ${profileCall(activeProfile).accent}`, color: profileCall(activeProfile).accent, fontWeight: 600 }}>
                                   {callList.map((c) => (
                                     <option key={c.id} value={c.id}>{c.name}{c.topic ? ` — ${c.topic}` : ""}</option>
@@ -2622,6 +2846,20 @@ export default function App() {
                               <div><div className="eyebrow" style={{ marginBottom: 3 }}>Department</div><EInput value={activeProfile.dept} onChange={(v) => updProfile(activeProfile.id, { dept: v })} placeholder="e.g. MIE" /></div>
                               <div><div className="eyebrow" style={{ marginBottom: 3 }}>Supervisor</div><EInput value={activeProfile.supervisor} onChange={(v) => updProfile(activeProfile.id, { supervisor: v })} placeholder="Professor" /></div>
                               <div><div className="eyebrow" style={{ marginBottom: 3 }}>Mentor</div><EInput value={activeProfile.mentor} onChange={(v) => updProfile(activeProfile.id, { mentor: v })} placeholder="Assigned mentor" /></div>
+                              <div>
+                                <div className="eyebrow" style={{ marginBottom: 3 }}>Status</div>
+                                <select
+                                  value={statusOf(activeProfile).id}
+                                  aria-label="Team status"
+                                  onChange={(e) => updProfile(activeProfile.id, { status: e.target.value })}
+                                  style={{
+                                    fontFamily: MONO, fontSize: 11.5, padding: "5px 7px", borderRadius: 8,
+                                    background: T.surface, fontWeight: 600, maxWidth: "100%",
+                                    border: `1px solid ${statusOf(activeProfile).fg}`, color: statusOf(activeProfile).fg,
+                                  }}>
+                                  {TEAM_STATUS.map((st) => <option key={st.id} value={st.id}>{st.label}</option>)}
+                                </select>
+                              </div>
                               <div>
                                 <div className="eyebrow" style={{ marginBottom: 3 }}>Finance account</div>
                                 <button className={"mini" + (activeProfile.finance === "opened" ? " on" : "")}
@@ -2681,6 +2919,12 @@ export default function App() {
                                 </div>
                               );
                             })()}
+                            <div className="eyebrow" style={{ margin: "14px 0 3px" }}>Documents</div>
+                            <LinkList links={activeProfile.links}
+                              onChange={(links) => updProfile(activeProfile.id, { links })}
+                              addLabel="Document"
+                              placeholder="Agreement, budget sheet, deck…" />
+
                             <div className="eyebrow" style={{ margin: "14px 0 3px" }}>Notes</div>
                             <NoteField value={activeProfile.notes} onChange={(v) => updProfile(activeProfile.id, { notes: v })}
                               placeholder="Anything worth remembering — context, risks, decisions, who said what. Grows as you type." minRows={6} />
@@ -2802,7 +3046,7 @@ export default function App() {
                         {evs.map((e, k) => {
                           const bg = e.color ? e.color : e.key ? accent : e.label === "Homecoming" ? T.gold : T.muted;
                           return (
-                            <div key={e.rid || `${m}-${k}`} className="evt" title="Click to edit" style={{ background: bg, cursor: "pointer" }}
+                            <div key={e.rid || `${m}-${k}`} className="evt" title={`${e.label} — click to edit`} style={{ background: bg, cursor: "pointer" }}
                               onClick={() => { const idx = events.indexOf(e); setEvDraft({ open: true, m: e.m, label: e.label, color: bg, idx }); }}>
                               {e.label}
                             </div>
@@ -2846,7 +3090,7 @@ export default function App() {
                           </div>
                           <div style={{ display: "flex", alignItems: "center", gap: 8, flex: "0 0 auto" }}>
                             <div className="disp" style={{ fontSize: 30, fontWeight: 800, color: accent }}>{evPct}%</div>
-                            <button onClick={() => rmEvent(activeEv.id)} title="Remove this event" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button>
+                            <IconBtn onClick={() => rmEvent(activeEv.id)} title="Remove this event"><Trash2 size={14} /></IconBtn>
                           </div>
                         </div>
                         <div className="track" style={{ marginTop: 12 }}><div style={{ width: evPct + "%", background: accent }} /></div>
@@ -2863,7 +3107,7 @@ export default function App() {
                                 </button>
                                 <EInput value={c.label} onChange={(v) => updEvItem(activeEv.id, c.id, { label: v })} placeholder="Step" />
                                 <EInput value={c.owner} onChange={(v) => updEvItem(activeEv.id, c.id, { owner: v })} placeholder="Owner" w="120px" align="right" />
-                                <button onClick={() => rmEvItem(activeEv.id, c.id)} title="Remove" style={{ flex: "0 0 auto", color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={13} /></button>
+                                <IconBtn onClick={() => rmEvItem(activeEv.id, c.id)} title="Remove" style={{ flex: "0 0 auto" }}><Trash2 size={13} /></IconBtn>
                               </div>
                             ))}
                           </div>
@@ -2891,7 +3135,7 @@ export default function App() {
                           <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 1, flexWrap: "wrap" }}>
                             <span className="mono" style={{ color: T.muted, fontSize: 10.5, paddingLeft: 8 }}>seen</span>
                             <EInput value={t.lastSeen} onChange={(v) => updRoad(i, { lastSeen: v })} placeholder="—" mono w="64px" ariaLabel="Last seen" />
-                            <button className="mono" title="Log another rehearsal run" style={{ fontSize: 10.5, color: T.muted, border: `1px solid ${T.hairline}`, borderRadius: 6, padding: "2px 6px" }}
+                            <button className="mono" title="Log another rehearsal run" style={{ fontSize: 10.5, color: T.muted, border: `1px solid ${T.hairline}`, borderRadius: 6, padding: "5px 8px", minHeight: 26 }}
                               onClick={() => updRoad(i, { runs: (Number(t.runs) || 0) + 1 })}>{t.runs} run{Number(t.runs) === 1 ? "" : "s"} +</button>
                           </div>
                           <NoteField value={t.note} onChange={(v) => updRoad(i, { note: v })}
@@ -2930,7 +3174,12 @@ export default function App() {
                 ) : (
                   <div style={{ overflowX: "auto" }}>
                     <table>
-                      <thead><tr><th>Team</th><th>Pitched</th><th>Awards</th><th>Phase 2</th><th>Amount /yr</th><th>Note</th><th></th></tr></thead>
+                      <thead><tr>
+                        <th scope="col">Team</th><th scope="col">Pitched</th>
+                        <th scope="col">Pitch score /{MAX_SCORE}</th>
+                        <th scope="col">Awards</th><th scope="col">Phase 2</th><th scope="col">Amount /yr</th>
+                        <th scope="col">Note</th><th scope="col" aria-label="Remove" />
+                      </tr></thead>
                       <tbody>
                         {results.map((r) => (
                           <tr key={r.id}>
@@ -2939,6 +3188,13 @@ export default function App() {
                               <button className={"mini" + (r.pitched ? " on" : "")} onClick={() => updResult(r.id, { pitched: !r.pitched })}>
                                 {r.pitched ? <><Check size={11} style={{ verticalAlign: -1 }} /> Yes</> : "—"}
                               </button>
+                            </td>
+                            <td style={{ minWidth: 150 }}>
+                              {/* The pitch that decides Phase 2 funding used to
+                                  leave nothing behind but a tick. */}
+                              <ScorePanel rec={r} panel={JUDGES}
+                                label={`Demo Day score for ${r.team || "this team"}`}
+                                onChange={(patch) => updResult(r.id, patch)} />
                             </td>
                             <td style={{ minWidth: 210 }}>
                               <span style={{ display: "inline-flex", gap: 5, flexWrap: "wrap" }}>
@@ -2965,7 +3221,7 @@ export default function App() {
                               </div>
                             </td>
                             <td style={{ minWidth: 200 }}><NoteField value={r.note} onChange={(v) => updResult(r.id, { note: v })} placeholder="Traction note" minRows={1} style={{ fontSize: 12.5 }} /></td>
-                            <td><button onClick={() => rmResult(r.id)} title="Remove" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button></td>
+                            <td><IconBtn onClick={() => rmResult(r.id)} title="Remove"><Trash2 size={14} /></IconBtn></td>
                           </tr>
                         ))}
                       </tbody>
@@ -3005,15 +3261,27 @@ export default function App() {
 
               {progTab === "sessions" && (<>
               <div className="card" style={{ marginTop: 20 }}>
+                {sessions.length > 0 && (
+                  <div className="sessionrow" style={{ display: "flex", gap: 12, alignItems: "center", paddingBottom: 8, borderBottom: `1px solid ${T.hairline}` }}>
+                    <span style={{ flex: "0 0 12px" }} />
+                    <span className="eyebrow" style={{ flex: "0 0 106px" }}>Date &amp; time</span>
+                    <span className="eyebrow" style={{ flex: 1, minWidth: 160 }}>Session &amp; speaker</span>
+                    <span className="eyebrow" style={{ flex: "0 0 84px" }}>Place</span>
+                    <span className="eyebrow" style={{ flex: "0 0 112px" }}>Room booking</span>
+                    <span className="eyebrow" style={{ flex: "0 0 auto" }}>Order</span>
+                    <span className="eyebrow" style={{ flex: "0 0 auto" }}>Status</span>
+                    <span style={{ flex: "0 0 auto", width: 60 }} />
+                  </div>
+                )}
                 <div>
                   {sessions.map((s, i) => {
                     const color = s.kind === "milestone" ? accent : s.kind === "community" ? T.gold : s.kind === "meeting" ? T.info : T.muted;
                     return (
                       <div key={s.sid || `session-${i}`} className="sessionrow" style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "10px 0", borderBottom: i === sessions.length - 1 ? "none" : `1px solid ${T.hairline}` }}>
                         <span style={{ width: 12, height: 12, borderRadius: 999, background: s.done ? color : T.surface, boxShadow: `0 0 0 2px ${color}`, marginTop: 9, flex: "0 0 12px" }} />
-                        <div style={{ width: 72, flex: "0 0 72px" }}>
-                          <EInput value={s.date} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, date: v } : x)))} placeholder="Date" mono />
-                          <EInput value={s.time} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, time: v } : x)))} placeholder="Time" mono />
+                        <div style={{ width: 106, flex: "0 0 106px" }}>
+                          <EInput value={s.date} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, date: v } : x)))} placeholder="Date" mono ariaLabel="Session date" />
+                          <EInput value={s.time} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, time: v } : x)))} placeholder="Time" mono ariaLabel="Session time" />
                         </div>
                         <div style={{ flex: 1, minWidth: 160 }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -3023,11 +3291,9 @@ export default function App() {
                           <EInput value={s.who} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, who: v } : x)))} placeholder="Speaker" />
                         </div>
                         <div style={{ width: 84, flex: "0 0 84px", marginTop: 1 }}>
-                          <div className="eyebrow" style={{ fontSize: 9, marginBottom: 1 }}>Place</div>
-                          <EInput value={s.place} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, place: v } : x)))} placeholder="Room" mono />
+                          <EInput value={s.place} onChange={(v) => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, place: v } : x)))} placeholder="Room" mono ariaLabel="Room" />
                         </div>
                         <div style={{ width: 112, flex: "0 0 112px", marginTop: 1, display: "flex", flexDirection: "column", gap: 3 }}>
-                          <div className="eyebrow" style={{ fontSize: 9, marginBottom: 1 }}>Room booking</div>
                           <button className="mini" onClick={() => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, roomRequested: !x.roomRequested } : x)))}
                             style={{ fontSize: 10.5, padding: "3px 7px", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap", borderColor: s.roomRequested ? T.info : T.hairline, color: s.roomRequested ? T.info : T.muted }} title="Room request sent to Facilities">
                             {s.roomRequested ? <Check size={11} /> : <Circle size={10} />} Request sent
@@ -3037,17 +3303,15 @@ export default function App() {
                             {s.roomConfirmed ? <CheckCircle2 size={11} /> : <Circle size={10} />} Confirmed
                           </button>
                         </div>
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2, marginTop: 4, flex: "0 0 auto" }}>
-                          <button title="Move to top" disabled={i === 0} onClick={() => moveSessionEnd(i, true)} style={{ color: T.muted, display: "grid", placeItems: "center", padding: 2, opacity: i === 0 ? 0.3 : 1, cursor: i === 0 ? "default" : "pointer" }}><ChevronsUp size={13} /></button>
-                          <button title="Move to bottom" disabled={i === sessions.length - 1} onClick={() => moveSessionEnd(i, false)} style={{ color: T.muted, display: "grid", placeItems: "center", padding: 2, opacity: i === sessions.length - 1 ? 0.3 : 1, cursor: i === sessions.length - 1 ? "default" : "pointer" }}><ChevronsDown size={13} /></button>
-                          <button title="Move up" disabled={i === 0} onClick={() => moveSession(i, -1)} style={{ color: T.muted, display: "grid", placeItems: "center", padding: 2, opacity: i === 0 ? 0.3 : 1, cursor: i === 0 ? "default" : "pointer" }}><ChevronUp size={14} /></button>
-                          <button title="Move down" disabled={i === sessions.length - 1} onClick={() => moveSession(i, 1)} style={{ color: T.muted, display: "grid", placeItems: "center", padding: 2, opacity: i === sessions.length - 1 ? 0.3 : 1, cursor: i === sessions.length - 1 ? "default" : "pointer" }}><ChevronDown size={14} /></button>
+                        <div style={{ display: "flex", gap: 2, marginTop: 3, flex: "0 0 auto" }}>
+                          <IconBtn title="Move up" disabled={i === 0} onClick={() => moveSession(i, -1)}><ChevronUp size={15} /></IconBtn>
+                          <IconBtn title="Move down" disabled={i === sessions.length - 1} onClick={() => moveSession(i, 1)}><ChevronDown size={15} /></IconBtn>
                         </div>
                         <button onClick={() => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, done: !x.done } : x)))}
                           className="mini" style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap", borderColor: s.done ? T.ok : T.hairline, color: s.done ? T.ok : T.muted }} title="Mark held">
                           {s.done ? <CheckCircle2 size={14} /> : <Circle size={14} />}{s.done ? "Held" : "Upcoming"}
                         </button>
-                        <button onClick={() => printSignIn(s)} title="Print attendance sheet for this session" style={{ marginTop: 8, color: T.muted, display: "grid", placeItems: "center" }}><Download size={14} /></button>
+                        <IconBtn onClick={() => printSignIn(s)} title="Print attendance sheet for this session" style={{ marginTop: 8 }}><Download size={14} /></IconBtn>
                         <IconBtn title="Remove session" style={{ marginTop: 8 }} onClick={() => rmSession(i)}><Trash2 size={14} /></IconBtn>
                       </div>
                     );
@@ -3131,10 +3395,9 @@ export default function App() {
                                     <div style={{ fontSize: 13, fontWeight: 500 }}>{r.name}</div>
                                     {r.email && <div className="mono" style={{ fontSize: 10.5, color: T.muted }}>{r.email}</div>}
                                   </div>
-                                  <button onClick={() => removePerson(r)} title={`Remove ${r.name} from ${r.team}`}
-                                    style={{ flex: "0 0 auto", color: T.muted, display: "grid", placeItems: "center", padding: 3 }}>
+                                  <IconBtn onClick={() => removePerson(r)} title={`Remove ${r.name} from ${r.team}`} style={{ flex: "0 0 auto" }}>
                                     <Trash2 size={13} />
-                                  </button>
+                                  </IconBtn>
                                 </div>
                               );
                             })}
@@ -3179,7 +3442,9 @@ export default function App() {
                 if (!items.length)
                   return <div className="card" style={{ marginTop: 16, color: T.muted, fontSize: 13.5 }}>Nothing here{q ? " matches that search" : " yet"} — add an entry.</div>;
                 return (
-                  <div className="scards" style={{ marginTop: 16 }}>
+                  <div className="scards" style={{ marginTop: 16, alignItems: "start" }}>
+                    {/* Entries vary from two lines to twenty, so each card takes its
+                        own height rather than stretching to the tallest in its row. */}
                     {items.map((k) => (
                       kbEdit === k.id ? (
                         <div key={k.id} className="card" style={{ padding: 15, borderColor: T.burgundy, boxShadow: `0 0 0 1px ${T.tint} inset` }}>
@@ -3204,10 +3469,10 @@ export default function App() {
                             <span className="disp" style={{ fontWeight: 700, fontSize: 14.5 }}>{k.title || "Untitled"}</span>
                             <div style={{ display: "flex", gap: 6, alignItems: "center", flex: "0 0 auto" }}>
                               {k.draft && <Pill bg="#FBF1D8" fg="#9a7b12">⚠ Draft</Pill>}
-                              <button onClick={() => setKbEdit(k.id)} title="Edit" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Pencil size={13} /></button>
+                              <IconBtn onClick={() => setKbEdit(k.id)} title="Edit"><Pencil size={13} /></IconBtn>
                             </div>
                           </div>
-                          <div style={{ color: T.muted, fontSize: 12.5, marginTop: 7, lineHeight: 1.5, whiteSpace: "pre-wrap", fontFamily: k.category === "templates" ? "'IBM Plex Mono', monospace" : "inherit" }}>
+                          <div style={{ color: T.muted, fontSize: 12.5, marginTop: 7, lineHeight: 1.5, whiteSpace: "pre-wrap", fontFamily: k.category === "templates" ? MONO : "inherit" }}>
                             {k.body}
                           </div>
                           {k.category === "templates" && (
@@ -3270,7 +3535,7 @@ export default function App() {
 
                   {(() => {
                     const q = query.trim().toLowerCase();
-                    const match = (t) => (cohortFilter !== "phase2" || t.phase2) && (!q || (t.name || "").toLowerCase().includes(q) || (t.blurb || "").toLowerCase().includes(q));
+                    const match = (t) => (cohortFilter !== "phase2" || inPhase2(t)) && (!q || (t.name || "").toLowerCase().includes(q) || (t.blurb || "").toLowerCase().includes(q));
                     const anyVisible = cohortData.some((co) => (cohortFilter === "all" || cohortFilter === "phase2" || cohortFilter === co.c) && co.teams.some(match));
                     if (!anyVisible)
                       return <div className="card" style={{ marginTop: 16, color: T.muted, fontSize: 13.5 }}>No teams match that. Try another cohort, clear the search, or drop in a file above.</div>;
@@ -3289,7 +3554,7 @@ export default function App() {
                           <div className="scards">
                             {visible.map(({ t, ti }) => (
                               editTeam === t.rid && t.rid ? (
-                                <TeamEditCard key={t.rid} t={t} awards={AWARDS}
+                                <TeamEditCard key={t.rid} t={t} awards={AWARDS} funded={isFunded(t)}
                                   onChange={(patch) => updTeam(ci, ti, patch)}
                                   onToggleAward={(a) => toggleAward(ci, ti, a)}
                                   onDone={() => setEditTeam(null)}
@@ -3298,7 +3563,7 @@ export default function App() {
                                     rmTeam(ci, ti); setEditTeam(null);
                                   }} />
                               ) : (
-                                <TeamCard key={t.rid || `${ci}-${ti}`} t={t} onEdit={() => setEditTeam(t.rid)} />
+                                <TeamCard key={t.rid || `${ci}-${ti}`} t={t} phase2={inPhase2(t)} onEdit={() => setEditTeam(t.rid)} />
                               )
                             ))}
                           </div>
@@ -3341,7 +3606,7 @@ export default function App() {
                                 ))}
                               </div>
                             </td>
-                            <td><button onClick={() => rmAlum(i)} title="Remove" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button></td>
+                            <td><IconBtn onClick={() => rmAlum(i)} title="Remove"><Trash2 size={14} /></IconBtn></td>
                           </tr>
                         ))}
                       </tbody>
@@ -3394,7 +3659,11 @@ export default function App() {
                       return (
                         <button key={p.id} title={p.team || "Untitled"} className={"chip" + (activeP2 && activeP2.id === p.id ? " on" : "")} onClick={() => setActiveP2Id(p.id)} style={{ maxWidth: 260 }}>
                           {p.team || "Untitled"}
-                          <span className="mono" style={{ fontSize: 10, marginLeft: 6, color: full ? T.ok : T.muted }}>
+                          <span className="mono" style={{
+                            fontSize: 10, marginLeft: 6,
+                            color: activeP2 && activeP2.id === p.id ? "#fff" : full ? T.ok : T.muted,
+                            opacity: activeP2 && activeP2.id === p.id ? 0.9 : 1,
+                          }}>
                             {full ? "paid" : `$${paid.toLocaleString()}/${Number(p.awarded) ? "$" + Number(p.awarded).toLocaleString() : "—"}`}
                           </span>
                         </button>
@@ -3414,7 +3683,7 @@ export default function App() {
                         <div className="card">
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                             <div className="eyebrow">Team</div>
-                            <button onClick={() => rmP2(activeP2.id)} title="Remove from tracking" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button>
+                            <IconBtn onClick={() => rmP2(activeP2.id)} title="Remove from tracking"><Trash2 size={14} /></IconBtn>
                           </div>
                           <EInput value={activeP2.team} onChange={(v) => updP2(activeP2.id, { team: v })} placeholder="Team name" />
                           <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 8, marginTop: 10 }}>
@@ -3555,14 +3824,14 @@ function Alert({ icon, text, cta, onClick, accent, last, tone }) {
     </div>
   );
 }
-function TeamCard({ t, onEdit }) {
+function TeamCard({ t, phase2, onEdit }) {
   return (
     <div className="card" style={{ padding: 15 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
         <span className="disp" style={{ fontWeight: 700, fontSize: 15 }}>{t.name || "Untitled team"}</span>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flex: "0 0 auto" }}>
-          {t.phase2 && <Pill bg={T.tint} fg={T.burgundy}>Phase II</Pill>}
-          <button onClick={onEdit} title="Edit team" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Pencil size={13} /></button>
+          {phase2 && <Pill bg={T.tint} fg={T.burgundy}>Phase II</Pill>}
+          <IconBtn onClick={onEdit} title="Edit team"><Pencil size={13} /></IconBtn>
         </div>
       </div>
       <div style={{ color: T.muted, fontSize: 12.5, marginTop: 6, lineHeight: 1.45 }}>{t.blurb}</div>
@@ -3579,7 +3848,7 @@ function TeamCard({ t, onEdit }) {
     </div>
   );
 }
-function TeamEditCard({ t, awards, onChange, onToggleAward, onDone, onRemove }) {
+function TeamEditCard({ t, awards, funded, onChange, onToggleAward, onDone, onRemove }) {
   const inp = { width: "100%", padding: "7px 9px", border: `1px solid ${T.hairline}`, borderRadius: 8, fontFamily: "inherit", fontSize: 12.5, background: T.surface, color: T.ink };
   return (
     <div className="card" style={{ padding: 15, borderColor: T.burgundy, boxShadow: `0 0 0 1px ${T.tint} inset` }}>
@@ -3592,7 +3861,16 @@ function TeamEditCard({ t, awards, onChange, onToggleAward, onDone, onRemove }) 
           const on = t.awards.includes(a);
           return <button key={a} className="mini" style={on ? { borderColor: AWARD_COLOR[a], color: a === "Most Innovative" ? T.ink : "#fff", background: AWARD_COLOR[a] } : {}} onClick={() => onToggleAward(a)}>{a}</button>;
         })}
-        <button className="mini" style={t.phase2 ? { borderColor: T.burgundy, color: "#fff", background: T.burgundy } : {}} onClick={() => onChange({ phase2: !t.phase2 })}>Phase II</button>
+        {funded ? (
+          <span className="mini" title="Funded in Phase II teams — change it there"
+            style={{ borderColor: T.burgundy, color: "#fff", background: T.burgundy, display: "inline-flex", alignItems: "center" }}>
+            Phase II · funded
+          </span>
+        ) : (
+          <button className="mini" style={t.phase2 ? { borderColor: T.burgundy, color: "#fff", background: T.burgundy } : {}}
+            title="For teams funded before Phase II was tracked here"
+            onClick={() => onChange({ phase2: !t.phase2 })}>Phase II</button>
+        )}
       </div>
       <div style={{ marginBottom: 11 }}>
         <NoteField value={t.note || ""} onChange={(v) => onChange({ note: v })} placeholder="Traction note — clients, funding, pilots, press" minRows={2} style={{ fontSize: 12.5 }} />
@@ -3604,11 +3882,11 @@ function TeamEditCard({ t, awards, onChange, onToggleAward, onDone, onRemove }) 
     </div>
   );
 }
-function CallCard({ call, active, palette, editing, onEdit, onChange, onUse, onRemove }) {
+function CallCard({ call, teamCount, palette, editing, onEdit, onChange, onOpen, onRemove }) {
   const fld = (k, ph, opts = {}) => (
     <input value={call[k] ?? ""} onChange={(e) => onChange({ [k]: opts.num ? e.target.value.replace(/\D/g, "") : e.target.value })} placeholder={ph}
       className={opts.mono ? "mono" : ""}
-      style={{ width: opts.w || "100%", padding: "7px 9px", border: `1px solid ${T.hairline}`, borderRadius: 8, fontFamily: opts.mono ? "IBM Plex Mono" : "inherit", fontSize: 13, background: T.surface, color: T.ink }} />
+      style={{ width: opts.w || "100%", padding: "7px 9px", border: `1px solid ${T.hairline}`, borderRadius: 8, fontFamily: opts.mono ? MONO : "inherit", fontSize: 13, background: T.surface, color: T.ink }} />
   );
   if (editing) {
     return (
@@ -3630,13 +3908,13 @@ function CallCard({ call, active, palette, editing, onEdit, onChange, onUse, onR
     );
   }
   return (
-    <div className="card" style={{ padding: 16, borderColor: active ? call.accent : T.hairline, boxShadow: active ? `0 0 0 1px ${call.accent} inset` : "none" }}>
+    <div className="card" style={{ padding: 16, borderTop: `3px solid ${call.accent}` }}>
       <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
         <span style={{ width: 10, height: 10, borderRadius: 999, background: call.accent }} />
         <span className="disp" style={{ fontWeight: 700, fontSize: 16 }}>{call.name} call</span>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          <button onClick={onEdit} title="Edit call" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Pencil size={13} /></button>
-          {onRemove && <button onClick={onRemove} title="Remove call" style={{ color: T.muted, display: "grid", placeItems: "center" }}><Trash2 size={14} /></button>}
+          <IconBtn onClick={onEdit} title="Edit call"><Pencil size={13} /></IconBtn>
+          {onRemove && <IconBtn onClick={onRemove} title="Remove call"><Trash2 size={14} /></IconBtn>}
         </div>
       </div>
       <div style={{ color: T.muted, fontSize: 13, marginTop: 6 }}>{call.topic}</div>
@@ -3645,8 +3923,9 @@ function CallCard({ call, active, palette, editing, onEdit, onChange, onUse, onR
         <div><div className="eyebrow">Closes</div><div className="mono" style={{ fontSize: 13.5, marginTop: 3 }}>{call.close}</div></div>
         <div><div className="eyebrow">Subs</div><div className="disp" style={{ fontSize: 21, fontWeight: 800, marginTop: 1, color: call.accent }}>{call.subs}</div></div>
       </div>
-      <button className="mini" style={active ? { marginTop: 14, borderColor: call.accent, color: "#fff", background: call.accent } : { marginTop: 14 }} onClick={onUse}>
-        {active ? "Active theme" : "Use this theme"}
+      <button className="mini" style={{ marginTop: 14, borderColor: call.accent, color: call.accent }} onClick={onOpen}
+        title={`Open Selection filtered to the ${call.name} call`}>
+        {teamCount} shortlisted team{teamCount === 1 ? "" : "s"} →
       </button>
     </div>
   );

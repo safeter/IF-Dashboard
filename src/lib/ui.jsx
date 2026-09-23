@@ -28,6 +28,10 @@ const request = (spec) =>
 
 export const ui = {
   confirm: (message, opts = {}) => request({ kind: "confirm", message, ...opts }),
+  /* Three-way: resolves true for the primary, "alt" for the middle option, and
+     false for cancel. Needed where neither answer is a plain yes/no — losing
+     someone else's edits versus losing your own, say. */
+  choose: (message, opts = {}) => request({ kind: "confirm", message, ...opts }),
   prompt: (message, initial = "", opts = {}) => request({ kind: "prompt", message, initial, ...opts }),
   alert: (message, opts = {}) => request({ kind: "alert", message, ...opts }),
   toast: (message, tone = "ok") => { if (pushToast) pushToast(message, tone); },
@@ -120,11 +124,14 @@ export function DialogHost() {
               />
             )}
 
-            <div style={{ display: "flex", gap: 8, marginTop: 18, justifyContent: "flex-end" }}>
+            <div style={{ display: "flex", gap: 8, marginTop: 18, justifyContent: "flex-end", flexWrap: "wrap" }}>
               {d.kind !== "alert" && (
                 <button className="btn ghost" onClick={() => close(d.kind === "prompt" ? null : false)}>
                   {d.cancelLabel || "Cancel"}
                 </button>
+              )}
+              {d.altLabel && (
+                <button className="btn ghost" onClick={() => close("alt")}>{d.altLabel}</button>
               )}
               <button
                 ref={okRef}
@@ -251,4 +258,27 @@ export function DateField({ value, onChange, w = "132px", title }) {
       style={{ width: w }}
     />
   );
+}
+
+/* ============================================================
+   Links
+
+   People paste whatever the address bar gave them, so a bare "drive.google.com/…"
+   has to work. Only http and https are ever produced: a javascript: or data:
+   URL typed into one of these fields must never become a live href.
+   ============================================================ */
+export function safeUrl(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const candidate = /^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : `https://${raw}`;
+  let parsed;
+  try { parsed = new URL(candidate); } catch { return null; }
+  return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
+}
+
+/** "drive.google.com/drive/folders/…" -> "drive.google.com" for a compact label. */
+export function linkHost(value) {
+  const href = safeUrl(value);
+  if (!href) return "";
+  try { return new URL(href).hostname.replace(/^www\./, ""); } catch { return ""; }
 }

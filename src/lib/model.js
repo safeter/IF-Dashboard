@@ -61,6 +61,23 @@ export function matchCall(value, callList) {
    ============================================================ */
 export const SOON_DAYS = 7;
 
+/* ============================================================
+   Team status
+
+   A team that withdraws or goes quiet used to have nowhere to be recorded, so
+   it stayed in every count as though it were still running. Status is carried
+   on the Phase I profile; anything saved before this reads as active.
+   ============================================================ */
+export const TEAM_STATUS = [
+  { id: "active", label: "Active", fg: T.ok, bg: T.okTint },
+  { id: "atrisk", label: "At risk", fg: T.warnInk, bg: T.warnTint },
+  { id: "withdrawn", label: "Withdrawn", fg: T.muted, bg: "#EFEAE5" },
+];
+export const statusOf = (p) =>
+  TEAM_STATUS.find((x) => x.id === (p && p.status)) || TEAM_STATUS[0];
+/** Withdrawn teams owe us nothing and are not counted as running. */
+export const isRunning = (p) => statusOf(p).id !== "withdrawn";
+
 export function deliverableState(d) {
   if (!d) return { key: "pending", label: "Pending", fg: T.muted, bg: "#EFEAE5", rank: 4 };
   if (d.status === "submitted") return { key: "submitted", label: "Submitted", fg: T.ok, bg: T.okTint, rank: 5 };
@@ -83,7 +100,7 @@ export const isOutstanding = (d) => !!d && d.status !== "submitted";
 /** Every outstanding deliverable across all teams, most urgent first. */
 export function outstandingDeliverables(profiles) {
   const rows = [];
-  (profiles || []).forEach((p) => {
+  (profiles || []).filter(isRunning).forEach((p) => {
     (p.deliverables || []).forEach((d) => {
       if (!isOutstanding(d)) return;
       rows.push({ ...d, profileId: p.id, team: p.name || "Untitled team", state: deliverableState(d) });
@@ -147,3 +164,36 @@ export function parseMembers(text) {
 }
 
 export { ISO_RE };
+
+
+/* ============================================================
+   Scoring
+
+   A team's score used to be one integer, typed by hand out of the panel's
+   total. That made a transcription slip invisible and left no record of who
+   scored what — thin for a decision that leads to a $50,000 award. Scores are
+   now held per judge and the total is derived. A team carrying only the old
+   single figure keeps it until someone enters the breakdown.
+   ============================================================ */
+export const JUDGE_MAX = 5;
+
+/** The per-judge array, padded to `panel` slots. */
+export const judgeScores = (rec, panel) => {
+  const raw = Array.isArray(rec && rec.scores) ? rec.scores : [];
+  return Array.from({ length: panel }, (_, i) => (raw[i] === 0 || raw[i] ? raw[i] : ""));
+};
+export const hasBreakdown = (rec) =>
+  Array.isArray(rec && rec.scores) && rec.scores.some((v) => v === 0 || Number(v) > 0);
+
+/** Total from the breakdown when there is one, else the legacy typed figure. */
+export function totalScore(rec, panel) {
+  if (hasBreakdown(rec)) {
+    return judgeScores(rec, panel).reduce((a, v) => a + (Number(v) || 0), 0);
+  }
+  const legacy = rec && rec.score;
+  return legacy === "" || legacy == null ? null : Number(legacy);
+}
+
+/** How many of the panel have actually scored — surfaces a half-entered row. */
+export const judgesIn = (rec, panel) =>
+  judgeScores(rec, panel).filter((v) => v === 0 || Number(v) > 0).length;
