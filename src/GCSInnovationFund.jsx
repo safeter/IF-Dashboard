@@ -1115,7 +1115,7 @@ export default function App() {
     const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), rows: data || [] }, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `if-dashboard-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `innovation-fund-manager-backup-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(a.href);
   };
@@ -2085,7 +2085,7 @@ export default function App() {
         <button className="brand" onClick={() => setView("dashboard")} style={{ background: "none", border: "none", textAlign: "left", width: "100%" }}>
           <div className="brandmark">IF</div>
           <div className="brandtext">
-            <div className="disp" style={{ fontWeight: 700, fontSize: 15, lineHeight: 1.1 }}>Innovation Fund</div>
+            <div className="disp" style={{ fontWeight: 700, fontSize: 15, lineHeight: 1.1 }}>Innovation Fund Manager</div>
             <div className="eyebrow" style={{ fontSize: 9.5 }}>Gina Cody School</div>
           </div>
         </button>

@@ -33,7 +33,7 @@ function Login() {
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
           <div style={{ width: 34, height: 34, borderRadius: 10, background: BURGUNDY, color: "#fff", display: "grid", placeItems: "center", fontWeight: 800 }}>IF</div>
           <div>
-            <div style={{ fontWeight: 700 }}>Innovation Fund</div>
+            <div style={{ fontWeight: 700 }}>Innovation Fund Manager</div>
             <div style={{ fontSize: 11, color: "#6E6E6E", letterSpacing: ".1em", textTransform: "uppercase" }}>Gina Cody School</div>
           </div>
         </div>

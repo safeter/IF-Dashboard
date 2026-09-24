@@ -1,6 +1,6 @@
-# IF-Dashboard — Innovation Fund tool
+# Innovation Fund Manager
 
-Internal dashboard + knowledge base for the GCS Innovation Fund.
+The program management tool for the GCS Innovation Fund: calls, selection, both funding phases, programming, deliverables, documents and the alumni library, with a knowledge base alongside. (The repository is still named `IF-Dashboard`; renaming it on GitHub is optional and would need the Netlify link updated.)
 Vite + React front end, Supabase for shared data + login, deploy on Netlify or Vercel.
 
 The app runs three ways with no code changes:
