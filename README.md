@@ -27,7 +27,7 @@ git push -u origin main
 ## 2. Set up the database (Supabase)
 
 1. In your project (`bgewhsybjymnohvmydqz`) open **SQL Editor → New query**.
-2. Paste the contents of **`supabase/app_state.sql`** and click **Run**. (That's the only one you need now. `supabase/schema.sql` is the richer relational version for later.)
+2. Paste the contents of **`supabase/app_state.sql`** and click **Run**. (That's the only one you need now. `supabase/schema.sql` is the richer relational version for later. **Don't run `supabase/setup.sql` or `supabase/reminders.sql` yet** — they're parked work; see `docs/frozen/README.md`.)
 3. **Authentication → Providers**: enable **Google** (or **Email** for magic links).
 4. **Project Settings → API**: copy the **Project URL** and the **anon public** key.
    - Never copy the `service_role` key or the DB password into the app or the repo.
