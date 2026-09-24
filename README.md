@@ -1,6 +1,6 @@
-# IF-Dashboard — Innovation Fund tool
+# Innovation Fund Manager
 
-Internal dashboard + knowledge base for the GCS Innovation Fund.
+The program management tool for the GCS Innovation Fund: calls, selection, both funding phases, programming, deliverables, documents and the alumni library, with a knowledge base alongside. (The repository is still named `IF-Dashboard`; renaming it on GitHub is optional and would need the Netlify link updated.)
 Vite + React front end, Supabase for shared data + login, deploy on Netlify or Vercel.
 
 The app runs three ways with no code changes:
@@ -27,7 +27,7 @@ git push -u origin main
 ## 2. Set up the database (Supabase)
 
 1. In your project (`bgewhsybjymnohvmydqz`) open **SQL Editor → New query**.
-2. Paste the contents of **`supabase/app_state.sql`** and click **Run**. (That's the only one you need now. `supabase/schema.sql` is the richer relational version for later.)
+2. Paste the contents of **`supabase/app_state.sql`** and click **Run**. (That's the only one you need now. `supabase/schema.sql` is the richer relational version for later. **Don't run `supabase/setup.sql` or `supabase/reminders.sql` yet** — they're parked work; see `docs/frozen/README.md`.)
 3. **Authentication → Providers**: enable **Google** (or **Email** for magic links).
 4. **Project Settings → API**: copy the **Project URL** and the **anon public** key.
    - Never copy the `service_role` key or the DB password into the app or the repo.
@@ -77,6 +77,10 @@ Every shortlisted team belongs to **one specific call**, and the Selection scree
 Importing an Airtable export maps the call column automatically — a value containing "Cybersecurity" or "Special" lands the team in that call. Re-importing keeps each team's id where the name is unchanged, so Team profiles and Demo Day results stay linked.
 
 Deleting a call never deletes teams: they move to an **Unassigned** group until you put them in another call.
+
+## Exporting to Excel
+
+**Export to Excel** (on the dashboard, and **Excel** in the sidebar or phone menu) downloads the cycle you're viewing as one workbook, one sheet each: Summary, Selection, Phase I teams, Deliverables, Meetings, Contacts, Attendance, Programming, Phase II teams and payments, Demo Day, Class visits and Pizza Q&As. It's for reporting, not for restoring — use **Backup** for that. Every cell is plain text or a number, never a formula.
 
 ## Tracking what teams owe you
 

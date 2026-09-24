@@ -1,0 +1,230 @@
+diff --git a/src/lib/access.js b/src/lib/access.js
+new file mode 100644
+index 0000000..821db5d
+--- /dev/null
++++ b/src/lib/access.js
+@@ -0,0 +1,78 @@
++import { supabase } from "./supabase";
++
++/* ============================================================
++   Who may do what.
++
++   Roles live in the `members` table created by supabase/setup.sql:
++     admin   everything, plus managing access, restoring backups and
++             starting / renaming / deleting cycles
++     editor  add and change data, upload documents
++     viewer  read only
++
++   The database enforces these through row-level security; nothing here is
++   the lock, only the signage. This module just asks what the signed-in
++   person is allowed to do, so the screens can show the right controls.
++
++   "legacy" means the setup script has not been run yet (no members table).
++   The app then behaves exactly as it always has — everyone signed in can do
++   everything — so this code can be deployed before or after the script.
++   ============================================================ */
++export const ROLES = [
++  { id: "admin", label: "Admin", hint: "Everything, including who has access" },
++  { id: "editor", label: "Editor", hint: "Add and change data, upload documents" },
++  { id: "viewer", label: "Viewer", hint: "Read only" },
++];
++export const roleLabel = (id) => (ROLES.find((r) => r.id === id) || {}).label || "Full access";
++
++const missingTable = (error) =>
++  !!error && (error.code === "42P01" || error.code === "PGRST205" ||
++    /does not exist|schema cache|could not find the table/i.test(error.message || ""));
++
++/**
++ * The signed-in person's role.
++ * Resolves to { role } where role is admin | editor | viewer | legacy,
++ * { role: null } when they are signed in but not on the list, or
++ * { error } when the answer could not be fetched.
++ */
++export async function fetchRole(email) {
++  if (!supabase) return { role: "legacy" };
++  const { data, error } = await supabase
++    .from("members").select("role").eq("email", String(email || "").toLowerCase()).maybeSingle();
++  if (missingTable(error)) return { role: "legacy" };
++  if (error) return { error: error.message };
++  return { role: data ? data.role : null };
++}
++
++export async function listMembers() {
++  const { data, error } = await supabase.from("members").select("email, role, name, added_at, added_by").order("email");
++  return { data: data || [], error: error && error.message };
++}
++
++/** Accounts that exist but are not on the list. Admins only; empty for anyone else. */
++export async function listPendingAccounts() {
++  const { data, error } = await supabase.rpc("ifm_pending_accounts");
++  return { data: data || [], error: error && error.message };
++}
++
++const friendly = (error) => {
++  if (!error) return null;
++  const m = error.message || String(error);
++  if (/at least one admin/i.test(m)) return "There must always be at least one admin. Make someone else an admin first.";
++  if (/duplicate key|already exists/i.test(m)) return "That person already has access.";
++  if (/members_email_check/i.test(m)) return "That doesn't look like an email address.";
++  if (/row-level security|permission denied/i.test(m)) return "Only admins can change who has access.";
++  return m;
++};
++
++export async function addMember(email, role) {
++  const { error } = await supabase.from("members").insert({ email: String(email).trim().toLowerCase(), role });
++  return friendly(error);
++}
++export async function setMemberRole(email, role) {
++  const { error } = await supabase.from("members").update({ role }).eq("email", email);
++  return friendly(error);
++}
++export async function removeMember(email) {
++  const { error } = await supabase.from("members").delete().eq("email", email);
++  return friendly(error);
++}
+diff --git a/src/lib/cloud.js b/src/lib/cloud.js
+index 13b19db..adbfd16 100644
+--- a/src/lib/cloud.js
++++ b/src/lib/cloud.js
+@@ -17,6 +17,12 @@ const baselines = new Map();
+ /* Payloads a conflict rejected, kept so the author can still force them. */
+ const conflicts = new Map();
+ let dirtyCount = 0;
++/* Viewers can read but not change anything. The database refuses their
++   writes regardless; this makes every screen refuse them first, so a control
++   never appears to change something that will not be kept. */
++let readOnly = false;
++export const setReadOnly = (v) => { readOnly = !!v; };
++export const isReadOnly = () => readOnly;
+ let inFlight = 0;
+ 
+ const rowKey = (r) => `${r.cycle}::${r.section}`;
+@@ -213,14 +219,17 @@ export function useCloudSection(section, seed, scope) {
+     }, 500);
+   };
+ 
+-  const set = (updater) =>
++  const set = (updater) => {
++    if (readOnly) return;
+     setData((prev) => {
+       const next = typeof updater === "function" ? updater(prev) : updater;
+       persist(next);
+       return next;
+     });
++  };
+ 
+   const saveNow = async (value) => {
++    if (readOnly) return false;
+     setData(value);
+     takePending();
+     if (!supabase) return true;
+@@ -236,6 +245,7 @@ export function useCloudSection(section, seed, scope) {
+ 
+ /** Delete every stored section for one cycle. */
+ export async function deleteCycleData(cycleId) {
++  if (readOnly) return false;
+   if (!supabase) return true;
+   const { error } = await supabase.from("app_state").delete().eq("cycle", cycleId);
+   if (error) console.error("Delete failed:", error.message);
+@@ -244,6 +254,7 @@ export async function deleteCycleData(cycleId) {
+ 
+ /** Write many rows in a single request (near-atomic seeding of a new cycle). */
+ export async function writeRows(rows) {
++  if (readOnly) return false;
+   if (!supabase) return true;
+   inFlight++; emit();
+   const stamp = new Date().toISOString();
+diff --git a/src/main.jsx b/src/main.jsx
+index 283f9b0..a24743c 100644
+--- a/src/main.jsx
++++ b/src/main.jsx
+@@ -2,7 +2,8 @@ import React, { useEffect, useState } from "react";
+ import ReactDOM from "react-dom/client";
+ import App from "./GCSInnovationFund.jsx";
+ import { supabase, supabaseConfigured } from "./lib/supabase";
+-import { ensureMigrated } from "./lib/cloud";
++import { ensureMigrated, setReadOnly } from "./lib/cloud";
++import { fetchRole } from "./lib/access";
+ 
+ const BURGUNDY = "#912338";
+ const PAPER = "#FAF8F5";
+@@ -54,6 +55,9 @@ function Gate() {
+   const [session, setSession] = useState(null);
+   const [ready, setReady] = useState(false);
+   const [migrated, setMigrated] = useState(false);
++  // undefined = still asking; null = signed in but not on the access list.
++  const [access, setAccess] = useState(supabaseConfigured ? undefined : { role: "legacy" });
++  const email = session && session.user ? session.user.email || "" : "";
+ 
+   useEffect(() => {
+     if (!supabaseConfigured) { setReady(true); return; }
+@@ -67,21 +71,66 @@ function Gate() {
+      database already on the new layout this is a single cheap read. It has to
+      finish before App mounts, otherwise App's own first write would create
+      the registry and strand the old rows under cycle='current'. */
++  // What this person may do. Asked once per sign-in.
++  const lookUp = () => {
++    setAccess(undefined);
++    fetchRole(email).then(setAccess).catch((e) => setAccess({ error: e.message || String(e) }));
++  };
++  useEffect(() => {
++    if (!supabaseConfigured) return;
++    if (!session) { setAccess(undefined); return; }
++    lookUp();
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [email]);
++
++  const role = access && access.role;
++  const canWrite = role === "admin" || role === "editor" || role === "legacy";
++
++  /* One-time move from the original single-cycle layout to the multi-cycle
++     one. It short-circuits as soon as a cycles registry exists. Only someone
++     allowed to write can perform it; a viewer skips straight to the app. */
+   useEffect(() => {
+     if (!supabaseConfigured) { setMigrated(true); return; }
+-    if (!session) return;
++    if (!session || !access || access.error || !role) return;
++    if (!canWrite) { setMigrated(true); return; }
+     let alive = true;
+     ensureMigrated()
+       .catch((e) => console.error("Migration check failed:", e))
+       .finally(() => { if (alive) setMigrated(true); });
+     return () => { alive = false; };
+-  }, [session]);
++  }, [session, role]); // eslint-disable-line react-hooks/exhaustive-deps
++
++  // Viewers can look but never save — enforced by the database, mirrored here
++  // so nothing on screen pretends to have saved.
++  setReadOnly(!!role && !canWrite);
+ 
+   if (!ready) return <Splash label="Loading…" />;
+   if (supabaseConfigured && !session) return <Login />;
++  if (access === undefined) return <Splash label="Checking your access…" />;
++  if (access.error) return <Notice title="Couldn't check your access" body={access.error} action="Try again" onAction={lookUp} />;
++  if (!role) {
++    return (
++      <Notice title="You're signed in, but don't have access yet"
++        body={`${email} isn't on the Innovation Fund Manager access list. Ask an admin to add you — they'll see your address waiting under Team access. Then sign in again.`}
++        action="Sign out" onAction={() => supabase.auth.signOut()} />
++    );
++  }
+   if (!migrated) return <Splash label="Preparing your data…" />;
+ 
+-  return <App />;
++  return <App role={role} email={email} />;
++}
++
++function Notice({ title, body, action, onAction }) {
++  return (
++    <div style={{ minHeight: "100vh", background: PAPER, display: "grid", placeItems: "center", fontFamily: "Inter, system-ui, sans-serif", color: INK, padding: 20 }}>
++      <div role="alert" style={{ width: "min(420px, 100%)", background: "#fff", border: "1px solid #ECE7E1", borderRadius: 18, padding: 28 }}>
++        <div style={{ width: 34, height: 34, borderRadius: 10, background: BURGUNDY, color: "#fff", display: "grid", placeItems: "center", fontWeight: 800, marginBottom: 14 }}>IF</div>
++        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6 }}>{title}</div>
++        <div style={{ fontSize: 13.5, color: "#6E6E6E", lineHeight: 1.5 }}>{body}</div>
++        <button onClick={onAction} style={{ marginTop: 18, padding: "9px 16px", borderRadius: 999, border: "none", background: BURGUNDY, color: "#fff", fontWeight: 600, cursor: "pointer" }}>{action}</button>
++      </div>
++    </div>
++  );
+ }
+ 
+ function Splash({ label }) {
