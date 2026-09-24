@@ -7,6 +7,7 @@ import {
 } from "./lib/cloud";
 import { supabase } from "./lib/supabase";
 import { T, PALETTE } from "./lib/theme";
+import { buildWorkbook, workbookName } from "./lib/exportWorkbook";
 /* Every web font names a fallback. Without one, a blocked or slow Google Fonts
    request drops the stat figures, the wheel and every table header into the
    browser default — Times New Roman. */
@@ -26,7 +27,7 @@ import {
   UploadCloud, RefreshCw, CalendarCheck, Trophy, Pizza,
   CheckCircle2, Circle, Search, Award, Plus, Trash2, Pencil,
   ChevronDown, ChevronUp, Download, Upload, Settings, AlertTriangle, Users, BookOpen, Copy, Wallet,
-  PackageCheck, Inbox, ExternalLink, Ban, Mail, Printer,
+  PackageCheck, Inbox, ExternalLink, Ban, FileSpreadsheet, Mail, Printer,
 } from "lucide-react";
 
 /* ============================================================
@@ -1627,6 +1628,22 @@ export default function App() {
     (a, p) => ({ allocated: a.allocated + budgetOf(p), spent: a.spent + spentOf(p) }),
     { allocated: 0, spent: 0 }
   );
+  /* Excel export of the viewed cycle, for reporting upward. Built by a pure
+     function in lib/exportWorkbook; this only gathers what is on screen. */
+  const exportExcel = () => {
+    try {
+      const wb = buildWorkbook(XLSX, {
+        cycleLabel: viewedCycle.label,
+        exportedAt: new Date().toLocaleString("en-CA", { dateStyle: "medium", timeStyle: "short" }),
+        judges: JUDGES, stages: STAGES, calls: callList, teams, profiles: profileRows,
+        phase2, results, sessions, attendance, classes, pizza,
+      });
+      XLSX.writeFile(wb, workbookName(viewedCycle.id, todayISO()));
+      ui.toast(`Cycle ${viewedCycle.label} exported to Excel.`);
+    } catch (e) {
+      ui.alert(`Couldn't build the Excel file: ${e.message}`);
+    }
+  };
   const p2Totals = phase2.filter((p) => p.status !== "completed").reduce(
     (a, p) => ({ awarded: a.awarded + (Number(p.awarded) || 0), paid: a.paid + p2Paid(p) }),
     { awarded: 0, paid: 0 }
@@ -2024,6 +2041,9 @@ export default function App() {
         {isPastView ? "Past cycle · read and edit history" : PHASE_BY_MONTH[CURRENT]}
       </div>
       <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
+        <button className="mini" onClick={exportExcel} title={`Download cycle ${viewedCycle.label} as an Excel workbook`}>
+          <FileSpreadsheet size={11} style={{ verticalAlign: -1, marginRight: 4 }} />Excel
+        </button>
         <button className="mini" onClick={exportAll} title="Download a backup of all data">
           <Download size={11} style={{ verticalAlign: -1, marginRight: 4 }} />Backup
         </button>
@@ -2134,8 +2154,16 @@ export default function App() {
         <div className="content">
           {view === "dashboard" && (
             <>
-              <div className="h1 disp">The year at a glance</div>
-              <div className="sub">One cohort cycle, two parallel calls. Right now: {(PHASE_BY_MONTH[CURRENT] || "").toLowerCase()}.</div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12, flexWrap: "wrap" }}>
+                <div>
+                  <div className="h1 disp">The year at a glance</div>
+                  <div className="sub">One cohort cycle, two parallel calls. Right now: {(PHASE_BY_MONTH[CURRENT] || "").toLowerCase()}.</div>
+                </div>
+                <button className="btn ghost" onClick={exportExcel}
+                  title="Selection, both phases, deliverables, attendance, Demo Day and promotion — one sheet each">
+                  <FileSpreadsheet size={14} /> Export to Excel
+                </button>
+              </div>
 
               <div className="grid resp" style={{ gridTemplateColumns: "1.1fr 1.4fr", marginTop: 22, alignItems: "stretch" }}>
                 <div className="card wheelcard" style={{ display: "flex", flexDirection: "column", justifyContent: "center" }}>

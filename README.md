@@ -78,6 +78,10 @@ Importing an Airtable export maps the call column automatically — a value cont
 
 Deleting a call never deletes teams: they move to an **Unassigned** group until you put them in another call.
 
+## Exporting to Excel
+
+**Export to Excel** (on the dashboard, and **Excel** in the sidebar or phone menu) downloads the cycle you're viewing as one workbook, one sheet each: Summary, Selection, Phase I teams, Deliverables, Meetings, Contacts, Attendance, Programming, Phase II teams and payments, Demo Day, Class visits and Pizza Q&As. It's for reporting, not for restoring — use **Backup** for that. Every cell is plain text or a number, never a formula.
+
 ## Tracking what teams owe you
 
 Deliverables live on each team's profile (**Teams → Profiles**) and carry a real due date. Everything else is derived from it, so nothing needs maintaining by hand:
