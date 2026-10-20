@@ -17,7 +17,7 @@ import { ui, DialogHost, NoteField, DateField, todayISO, fmtDate, safeUrl, linkH
 import {
   callFor, callGroups, matchCall, legacyCallId, UNASSIGNED,
   deliverableState, isOutstanding, deliverableSummary, profileDeliverableState, SOON_DAYS,
-  parseMembers, TEAM_STATUS, statusOf, isRunning,
+  parseMembers, TEAM_STATUS, statusOf, isRunning, rosterGaps,
   JUDGE_MAX, judgeScores, hasBreakdown, totalScore, judgesIn,
   REQUIRED_DOCS, docsSummary,
 } from "./lib/model";
@@ -1410,6 +1410,28 @@ export default function App() {
       ...m, rowId: `${p.id}:${li}`, team: p.name || "Untitled", profileId: p.id,
     }))
   );
+  /* Every Phase I team has a place on the attendance list, even before
+     anyone is listed for it, so a team can't silently drop off. */
+  const rosterTeams = profiles
+    .map((p) => ({ id: p.id, name: p.name || "Untitled", withdrawn: !isRunning(p), people: roster.filter((r) => r.profileId === p.id) }))
+    .filter((t) => t.people.length || !t.withdrawn)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const gaps = rosterGaps(profiles, missingProfiles);
+  const gapCount = gaps.noMembers.length + gaps.noProfile.length;
+  const [addingMembers, setAddingMembers] = useState(null); // team whose "add members" box is open
+  const openAddMembers = (id) => {
+    setAddingMembers(id);
+    setTimeout(() => { const el = document.getElementById(`att-team-${id}`); if (el) el.scrollIntoView({ behavior: "smooth", block: "center" }); }, 60);
+  };
+  const addMembers = (id, text) => {
+    setProfiles((ps) => ps.map((p) => (p.id === id ? { ...p, members: [String(p.members || "").trim(), text.trim()].filter(Boolean).join("\n") } : p)));
+    setAddingMembers(null);
+  };
+  const setUpTeam = (t) => {
+    const p = blankProfile(t);
+    setProfiles((ps) => [...ps, p]);
+    openAddMembers(p.id);
+  };
   const attFor = (sid) => (attendance && attendance[sid]) || {};
   const setAtt = (sid, key, val) =>
     setAttendance((a) => {
@@ -1438,7 +1460,10 @@ export default function App() {
     const present = roster.filter((r) => row[r.key] === "present").length;
     const absent = roster.filter((r) => row[r.key] === "absent").length;
     const excused = roster.filter((r) => row[r.key] === "excused").length;
-    return { present, absent, excused, marked: present + absent + excused, total: roster.length };
+    const expected = rosterTeams.filter((t) => !t.withdrawn);
+    const missingTeams = expected.filter((t) => !t.people.some((r) => row[r.key] === "present")).map((t) => t.name);
+    return { present, absent, excused, marked: present + absent + excused, total: roster.length,
+      teamsTotal: expected.length, teamsPresent: expected.length - missingTeams.length, missingTeams };
   };
 
   const PRINT_CSS = `
@@ -1473,14 +1498,16 @@ export default function App() {
 
   /* Blank sign-in sheet for one session — printed, signed, then entered back in. */
   const printSignIn = (s) => {
-    if (!roster.length) { ui.alert("No members found. Add team members in the Teams section first."); return; }
-    const byTeam = {};
-    roster.forEach((r) => { (byTeam[r.team] = byTeam[r.team] || []).push(r); });
-    const rows = Object.keys(byTeam).sort().map((team) => {
-      const head = `<tr class="teamhead"><td colspan="4">${esc(team)}</td></tr>`;
-      const people = byTeam[team].map((r) =>
-        `<tr><td>${esc(r.name)}</td><td class="em">${esc(r.email)}</td><td style="text-align:center"><span class="box"></span></td><td class="sig"></td></tr>`
-      ).join("");
+    if (!rosterTeams.length) { ui.alert("No Phase I teams yet. Set them up under Phase I teams first."); return; }
+    // A team with nobody listed still gets lines, so its members can sign in by hand.
+    const blank = `<tr><td>&nbsp;</td><td class="em"></td><td style="text-align:center"><span class="box"></span></td><td class="sig"></td></tr>`;
+    const rows = rosterTeams.map((t) => {
+      const head = `<tr class="teamhead"><td colspan="4">${esc(t.name)}${t.withdrawn ? " · withdrawn" : ""}</td></tr>`;
+      const people = t.people.length
+        ? t.people.map((r) =>
+          `<tr><td>${esc(r.name)}</td><td class="em">${esc(r.email)}</td><td style="text-align:center"><span class="box"></span></td><td class="sig"></td></tr>`
+        ).join("")
+        : blank.repeat(3);
       return head + people;
     }).join("");
     openPrint(
@@ -1495,14 +1522,13 @@ export default function App() {
 
   /* Full grid: everyone × every session, matching the master contact sheet. */
   const printAttendanceGrid = () => {
-    if (!roster.length) { ui.alert("No members found. Add team members in the Teams section first."); return; }
+    if (!rosterTeams.length) { ui.alert("No Phase I teams yet. Set them up under Phase I teams first."); return; }
     const mark = { present: "P", absent: "A", excused: "E" };
     const heads = sessions.map((s) => `<th style="font-size:9px">${esc(s.title.length > 22 ? s.title.slice(0, 20) + "…" : s.title)}<br/><span style="font-weight:normal;opacity:.8">${esc(s.date)}</span></th>`).join("");
-    const byTeam = {};
-    roster.forEach((r) => { (byTeam[r.team] = byTeam[r.team] || []).push(r); });
-    const rows = Object.keys(byTeam).sort().map((team) => {
-      const head = `<tr class="teamhead"><td class="n" colspan="${sessions.length + 1}">${esc(team)}</td></tr>`;
-      const people = byTeam[team].map((r) => {
+    const rows = rosterTeams.map((t) => {
+      const head = `<tr class="teamhead"><td class="n" colspan="${sessions.length + 1}">${esc(t.name)}${t.withdrawn ? " · withdrawn" : ""}</td></tr>`;
+      if (!t.people.length) return head + `<tr><td class="n" colspan="${sessions.length + 1}" style="color:#999">No members listed</td></tr>`;
+      const people = t.people.map((r) => {
         const cells = sessions.map((s) => `<td>${mark[attFor(s.sid)[r.key]] || ""}</td>`).join("");
         return `<tr><td class="n">${esc(r.name)}</td>${cells}</tr>`;
       }).join("");
@@ -2254,6 +2280,14 @@ export default function App() {
                   cta="See what's owed"
                   onClick={() => { setView("teams"); setTeamsTab("deliverables"); }}
                   accent={accent} />
+                <Alert icon={<Users size={15} />}
+                  tone={gapCount ? T.danger : undefined}
+                  text={gapCount
+                    ? `${gapCount} Phase I team${gapCount === 1 ? " is" : "s are"} missing from the attendance list`
+                    : "Every Phase I team is on the attendance list"}
+                  cta={gapCount ? "Fix the list" : "Open attendance"}
+                  onClick={() => { setView("programming"); setProgTab("attendance"); }}
+                  accent={accent} />
                 <Alert icon={<CalendarCheck size={15} />} text={nextEv ? `${nextEv.name} prep is ${nextEvPct}% complete — ${nextEvTotal - nextEvDone} step${nextEvTotal - nextEvDone === 1 ? "" : "s"} left` : "No events planned yet"} cta="Open planning" onClick={() => setView("planning")} accent={accent} />
                 <Alert icon={<Megaphone size={15} />} text={`Promo: ${classes.filter((c) => c.done).length}/${classes.length} class visits and ${pizza.filter((p) => p.done).length}/${pizza.length} pizza Q&As done`} cta="Manage promo" onClick={() => setView("calls")} accent={accent} />
                 <Alert icon={<Trophy size={15} />} text={`Homecoming: ${comingPct}% of alumni confirmed`} cta="View cohorts" onClick={() => setView("cohorts")} accent={accent} last />
@@ -2935,7 +2969,10 @@ export default function App() {
                             <EInput value={activeProfile.name} onChange={(v) => updProfile(activeProfile.id, { name: v })} placeholder="Team name" />
                             <div className="eyebrow" style={{ margin: "12px 0 3px" }}>Members</div>
                             <NoteField value={activeProfile.members} onChange={(v) => updProfile(activeProfile.id, { members: v })}
-                              placeholder={"One per line — name, program, email"} minRows={4} />
+                              placeholder={"One per line — name, program, email"} minRows={4} label="Members" />
+                            {isRunning(activeProfile) && !parseMembers(activeProfile.members).length && (
+                              <div style={{ fontSize: 12, color: T.warnInk, marginTop: 4 }}>No members yet, so this team won't appear on attendance lists.</div>
+                            )}
                             <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 8, marginTop: 10 }}>
                               <div><div className="eyebrow" style={{ marginBottom: 3 }}>Department</div><EInput value={activeProfile.dept} onChange={(v) => updProfile(activeProfile.id, { dept: v })} placeholder="e.g. MIE" /></div>
                               <div><div className="eyebrow" style={{ marginBottom: 3 }}>Supervisor</div><EInput value={activeProfile.supervisor} onChange={(v) => updProfile(activeProfile.id, { supervisor: v })} placeholder="Professor" /></div>
@@ -3425,17 +3462,57 @@ export default function App() {
               </div>
               </>)}
 
-              {progTab === "attendance" && (
-                roster.length === 0 ? (
-                  <div className="card" style={{ marginTop: 20, color: T.muted, fontSize: 13.5 }}>
-                    No members yet. Attendance is built from the member lists in <button onClick={() => setView("teams")} style={{ color: accent, fontWeight: 600, textDecoration: "underline" }}>Phase I teams</button> — add one person per line (name and email) and they'll appear here.
+              {progTab === "attendance" && (<>
+                {/* The roster check: every Phase I team must be on the list. */}
+                {gapCount === 0 ? (
+                  rosterTeams.length > 0 && (
+                    <div role="status" style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 16, fontSize: 13, color: T.ok }}>
+                      <CheckCircle2 size={15} /> All {rosterTeams.filter((t) => !t.withdrawn).length} Phase I teams are on the attendance list.
+                    </div>
+                  )
+                ) : (
+                  <div className="card" role="alert" style={{ marginTop: 16, borderColor: T.warn, background: "#FFFBF1" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600, fontSize: 14, color: T.warnInk }}>
+                      <AlertTriangle size={15} /> {gapCount} team{gapCount === 1 ? " is" : "s are"} missing from the attendance list
+                    </div>
+                    <div style={{ fontSize: 12.5, color: T.muted, margin: "4px 0 6px" }}>
+                      The list is built from each Phase I team's members. Fix these so nobody is left off a session.
+                    </div>
+                    {gaps.noProfile.map((t) => (
+                      <div key={"np-" + t.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderTop: `1px solid ${T.hairline}`, flexWrap: "wrap" }}>
+                        <div style={{ flex: 1, minWidth: 180 }}>
+                          <div style={{ fontSize: 13.5, fontWeight: 600 }}>{t.name || "Untitled"}</div>
+                          <div style={{ fontSize: 12, color: T.muted }}>Selected, but not set up as a Phase I team yet</div>
+                        </div>
+                        <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={() => setUpTeam(t)}>
+                          <Plus size={13} /> Add to Phase I
+                        </button>
+                      </div>
+                    ))}
+                    {gaps.noMembers.map((p) => (
+                      <div key={"nm-" + p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderTop: `1px solid ${T.hairline}`, flexWrap: "wrap" }}>
+                        <div style={{ flex: 1, minWidth: 180 }}>
+                          <div style={{ fontSize: 13.5, fontWeight: 600 }}>{p.name || "Untitled"}</div>
+                          <div style={{ fontSize: 12, color: T.muted }}>No members listed</div>
+                        </div>
+                        <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={() => openAddMembers(p.id)}>
+                          <Users size={13} /> Add members
+                        </button>
+                      </div>
+                    ))}
                   </div>
+                )}
+
+                {rosterTeams.length === 0 ? (
+                  gaps.noProfile.length === 0 && (
+                    <div className="card" style={{ marginTop: 20, color: T.muted, fontSize: 13.5 }}>
+                      No Phase I teams yet. Attendance is built from the member lists in <button onClick={() => setView("teams")} style={{ color: accent, fontWeight: 600, textDecoration: "underline" }}>Phase I teams</button> — add one person per line (name and email) and they'll appear here.
+                    </div>
+                  )
                 ) : (() => {
                   const cur = sessions.find((s) => s.sid === attSessionId) || sessions[0];
                   if (!cur) return <div className="card" style={{ marginTop: 20, color: T.muted, fontSize: 13.5 }}>Add a session first.</div>;
                   const st = attStats(cur.sid);
-                  const byTeam = {};
-                  roster.forEach((r) => { (byTeam[r.team] = byTeam[r.team] || []).push(r); });
                   const pill = { present: { bg: "#E8F0DD", fg: T.ok, lbl: "Present" }, absent: { bg: "#FBE3DC", fg: T.danger, lbl: "Absent" }, excused: { bg: "#FBF1D8", fg: T.warnInk, lbl: "Excused" } };
                   return (
                     <>
@@ -3461,9 +3538,15 @@ export default function App() {
                             <div className="mono" style={{ fontSize: 12, marginTop: 6 }}>
                               <span style={{ color: T.ok }}>{st.present} present</span> · <span style={{ color: T.danger }}>{st.absent} absent</span> · <span style={{ color: T.warnInk }}>{st.excused} excused</span> · <span style={{ color: T.muted }}>{st.total - st.marked} unmarked</span>
                             </div>
+                            {st.marked > 0 && st.teamsTotal > 0 && (
+                              <div style={{ fontSize: 12.5, marginTop: 4, color: st.missingTeams.length ? T.warnInk : T.ok }}>
+                                {st.teamsPresent}/{st.teamsTotal} teams had someone present
+                                {st.missingTeams.length > 0 && st.missingTeams.length <= 6 && <span style={{ color: T.muted }}> — none from {st.missingTeams.join(", ")}</span>}
+                              </div>
+                            )}
                           </div>
                           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                            <button className="mini" onClick={() => markAllPresent(cur.sid)}>Mark all present</button>
+                            <button className="mini" onClick={() => markAllPresent(cur.sid)} disabled={!roster.length}>Mark all present</button>
                             <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={() => printSignIn(cur)}>
                               <Download size={13} /> Sign-in sheet
                             </button>
@@ -3471,35 +3554,51 @@ export default function App() {
                         </div>
                         <div className="track" style={{ marginBottom: 4 }}><div style={{ width: (st.total ? (st.present / st.total) * 100 : 0) + "%", background: accent }} /></div>
 
-                        {Object.keys(byTeam).sort().map((team) => (
-                          <div key={team} style={{ marginTop: 14 }}>
-                            <div className="eyebrow" style={{ marginBottom: 4 }}>{team}</div>
-                            {byTeam[team].map((r) => {
-                              const v = attFor(cur.sid)[r.key];
-                              const p = v ? pill[v] : null;
-                              return (
-                                <div key={r.rowId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: `1px solid ${T.hairline}` }}>
-                                  <button onClick={() => cycleAtt(cur.sid, r.key)} title="Click to cycle present → absent → excused"
-                                    style={{ flex: "0 0 92px", textAlign: "left" }}>
-                                    {p ? <Pill bg={p.bg} fg={p.fg}>{p.lbl}</Pill> : <Pill bg="#EFEAE5" fg={T.muted}>Unmarked</Pill>}
-                                  </button>
-                                  <div style={{ flex: 1, minWidth: 0 }}>
-                                    <div style={{ fontSize: 13, fontWeight: 500 }}>{r.name}</div>
-                                    {r.email && <div className="mono" style={{ fontSize: 10.5, color: T.muted }}>{r.email}</div>}
+                        {rosterTeams.map((t) => {
+                          const here = t.people.filter((r) => attFor(cur.sid)[r.key] === "present").length;
+                          return (
+                            <div key={t.id} id={`att-team-${t.id}`} style={{ marginTop: 14, scrollMarginTop: 80 }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
+                                <div className="eyebrow">{t.name}{t.withdrawn ? " · withdrawn" : ""}</div>
+                                {t.people.length > 0 && <span className="mono" style={{ fontSize: 10.5, color: T.muted }}>{here}/{t.people.length} present</span>}
+                              </div>
+                              {t.people.length === 0 && (
+                                addingMembers === t.id ? (
+                                  <MemberEditor team={t.name} onSave={(text) => addMembers(t.id, text)} onCancel={() => setAddingMembers(null)} />
+                                ) : (
+                                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: `1px solid ${T.hairline}`, flexWrap: "wrap" }}>
+                                    <span style={{ flex: 1, fontSize: 13, color: T.warnInk }}>No one listed for this team yet.</span>
+                                    <button className="mini" onClick={() => setAddingMembers(t.id)}><Users size={11} style={{ verticalAlign: -1, marginRight: 4 }} />Add members</button>
                                   </div>
-                                  <IconBtn onClick={() => removePerson(r)} title={`Remove ${r.name} from ${r.team}`} style={{ flex: "0 0 auto" }}>
-                                    <Trash2 size={13} />
-                                  </IconBtn>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ))}
+                                )
+                              )}
+                              {t.people.map((r) => {
+                                const v = attFor(cur.sid)[r.key];
+                                const p = v ? pill[v] : null;
+                                return (
+                                  <div key={r.rowId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: `1px solid ${T.hairline}` }}>
+                                    <button onClick={() => cycleAtt(cur.sid, r.key)} title="Click to cycle present → absent → excused"
+                                      style={{ flex: "0 0 92px", textAlign: "left" }}>
+                                      {p ? <Pill bg={p.bg} fg={p.fg}>{p.lbl}</Pill> : <Pill bg="#EFEAE5" fg={T.muted}>Unmarked</Pill>}
+                                    </button>
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                      <div style={{ fontSize: 13, fontWeight: 500 }}>{r.name}</div>
+                                      {r.email && <div className="mono" style={{ fontSize: 10.5, color: T.muted }}>{r.email}</div>}
+                                    </div>
+                                    <IconBtn onClick={() => removePerson(r)} title={`Remove ${r.name} from ${r.team}`} style={{ flex: "0 0 auto" }}>
+                                      <Trash2 size={13} />
+                                    </IconBtn>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          );
+                        })}
                       </div>
                     </>
                   );
-                })()
-              )}
+                })()}
+              </>)}
             </>
           )}
 
@@ -3907,6 +4006,24 @@ function Swimlane({ label, sub, pct, accent }) {
         <span className="mono" style={{ fontSize: 11.5, color: T.muted }}>{sub}</span>
       </div>
       <div className="track"><div style={{ width: pct + "%", background: accent }} /></div>
+    </div>
+  );
+}
+/* Paste or type a team's members straight into the attendance list. They are
+   saved to the team's Members field, the one place people are kept. */
+function MemberEditor({ team, onSave, onCancel }) {
+  const [text, setText] = useState("");
+  const n = parseMembers(text).length;
+  return (
+    <div style={{ padding: "6px 0 10px", borderBottom: `1px solid ${T.hairline}` }}>
+      <NoteField value={text} onChange={setText} minRows={3} label={`Members of ${team}`}
+        placeholder={"One per line — name, program, email"} />
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+        <button className="btn" style={{ fontSize: 12, padding: "6px 12px" }} disabled={!n} onClick={() => onSave(text)}>
+          {n ? `Add ${n} ${n === 1 ? "person" : "people"}` : "Add people"}
+        </button>
+        <button className="mini" onClick={onCancel}>Cancel</button>
+      </div>
     </div>
   );
 }

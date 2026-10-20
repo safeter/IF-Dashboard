@@ -163,6 +163,20 @@ export function parseMembers(text) {
     });
 }
 
+/* ============================================================
+   Attendance roster check
+
+   The attendance list is built from each Phase I team's Members field. A
+   team with nobody listed, or a Selected team that was never set up as a
+   Phase I team, would otherwise be missing from it without anyone noticing.
+   ============================================================ */
+export function rosterGaps(profiles, missingProfiles) {
+  return {
+    noMembers: (profiles || []).filter((p) => isRunning(p) && parseMembers(p.members).length === 0),
+    noProfile: missingProfiles || [],
+  };
+}
+
 export { ISO_RE };
 
 
