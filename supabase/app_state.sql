@@ -14,7 +14,8 @@ create table if not exists app_state (
 
 alter table app_state enable row level security;
 
--- Any signed-in user can read and write. (Tighten with the allowlist below.)
+-- Any signed-in user can read and write. Run supabase/access.sql next: it
+-- replaces these with an access list, so only your team can register.
 create policy "team read"   on app_state for select to authenticated using (true);
 create policy "team insert" on app_state for insert to authenticated with check (true);
 create policy "team update" on app_state for update to authenticated using (true) with check (true);
