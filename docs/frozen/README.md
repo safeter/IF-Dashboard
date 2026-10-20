@@ -10,13 +10,21 @@ Parked on purpose, to be picked up later. **Nothing here is live, and none of it
 | Weekly reminder email | `supabase/reminders.sql` | Written and tested (20 checks). Depends on `setup.sql`. Needs a [Resend](https://resend.com) account. |
 | App side of roles | `docs/frozen/roles-app.patch` | About half done: the sign-in check, the "no access" screen, and read-only saving for viewers. |
 
+## Since freezing: the access list
+
+`supabase/access.sql` is live: an `access_list` table that decides who may register and who sees the data, managed from Supabase's Table Editor. When roles resume, `setup.sql` should take over from it:
+
+- copy `access_list` emails into `members` (as editors) before replacing the app_state rules
+- point the registration check (`ifm_check_signup` on `auth.users`) at `members` instead, or drop it
+- the app's access check (`hasAccess` in `src/lib/auth.js`) becomes the patch's `fetchRole`; `src/main.jsx` has been rewritten since the patch, so expect to re-apply its `main.jsx` part by hand
+
 ## Why roles need both halves
 
 `setup.sql` makes the database refuse anyone who isn't on the access list, and refuses viewers' edits. The app half makes the screens match: viewers don't see controls that won't work, and admins get a **Team access** panel to add people. Ship them together.
 
 ## Resuming roles
 
-1. `git apply docs/frozen/roles-app.patch` — it applies cleanly to the code as it stood when frozen. It adds `src/lib/access.js` and changes `src/main.jsx` and `src/lib/cloud.js`.
+1. `git apply --include='src/lib/*' docs/frozen/roles-app.patch` adds `src/lib/access.js` and changes `src/lib/cloud.js` (both still apply cleanly). Its `src/main.jsx` part no longer applies since the registration screen was added; redo it by hand (role lookup, "no access" screen, read-only for viewers).
 2. Still to build in `src/GCSInnovationFund.jsx`:
    - accept the `role` and `email` props the patch passes to `App`
    - viewers: a "view only" banner; hide add, delete and upload controls

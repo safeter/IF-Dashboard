@@ -27,9 +27,11 @@ git push -u origin main
 ## 2. Set up the database (Supabase)
 
 1. In your project (`bgewhsybjymnohvmydqz`) open **SQL Editor → New query**.
-2. Paste the contents of **`supabase/app_state.sql`** and click **Run**. (That's the only one you need now. `supabase/schema.sql` is the richer relational version for later. **Don't run `supabase/setup.sql` or `supabase/reminders.sql` yet** — they're parked work; see `docs/frozen/README.md`.)
-3. **Authentication → Providers**: enable **Google** (or **Email** for magic links).
-4. **Project Settings → API**: copy the **Project URL** and the **anon public** key.
+2. Paste the contents of **`supabase/app_state.sql`** and click **Run**.
+3. New query: paste **`supabase/access.sql`** and click **Run**. This is what makes registering safe — see [Letting your team in](#letting-your-team-in).
+   (`supabase/schema.sql` is the richer relational version for later. **Don't run `supabase/setup.sql` or `supabase/reminders.sql` yet** — they're parked work; see `docs/frozen/README.md`.)
+4. **Authentication → Sign In / Providers**: make sure **Email** is on, and **Allow new users to sign up** is on.
+5. **Project Settings → API**: copy the **Project URL** and the **anon public** key.
    - Never copy the `service_role` key or the DB password into the app or the repo.
 
 ## 3. Run locally (optional but nice)
@@ -56,7 +58,7 @@ Open the local URL. Sign in, edit something, refresh — it should persist.
 Import the repo, add the same two environment variables, deploy. `vercel.json` handles routing.
 
 ## 5. Point login back at your live URL
-Supabase → **Authentication → URL Configuration**: set **Site URL** to your Netlify/Vercel URL and add it to **Redirect URLs**. Otherwise Google/magic-link sign-in won't return correctly.
+Supabase → **Authentication → URL Configuration**: set **Site URL** to your Netlify/Vercel URL and add it to **Redirect URLs**. Otherwise the links in confirmation, invitation and password-reset emails lead to `localhost` instead of the app.
 
 Done — share the URL with your team. Every future `git push` redeploys automatically.
 
@@ -99,8 +101,26 @@ Notes grow with what you type rather than being capped to one line — team note
 ## How persistence works
 Each screen (calls, selection, teams, classes, pizza, sessions, calendar, checklist, road-to-demo-day, cohorts, alumni, Phase II) is saved as a JSON record in the `app_state` table, shared by everyone signed in. Writes are debounced, so inline typing isn't chatty. It's last-write-wins per screen — fine for a small team. When you outgrow it (per-judge scoring, cross-cohort queries), migrate to `supabase/schema.sql`.
 
-## Restricting access
-By default any signed-in Google/email user can read and write. To limit it to your team, use the allowlist (or domain rule) noted at the bottom of `supabase/app_state.sql`.
+## Letting your team in
+
+The sign-in screen has a **Register** tab, but only addresses on the **access list** can register, and only people on the list see any data. Without `supabase/access.sql`, anyone who found the site could register and read and change everything — run it before sharing the link.
+
+**To add someone:** Supabase → **Table Editor → access_list → Insert row**, type their email, **Save**. Then send them the link: they choose **Register**, enter that email and a password.
+**To remove someone:** delete their row. They lose access straight away, even if they're signed in.
+People who had an account before you ran the script were put on the list automatically.
+
+### Why "Add user" in Supabase may not have worked
+
+- **"Create new user" without "Auto Confirm User" ticked**: the account exists but can't sign in ("Email not confirmed"). Tick it, or delete the user and let them register instead.
+- **"Send invitation"**: Supabase's built-in email only delivers to people on your Supabase team (and only a few emails an hour), so the invitation usually never arrives. If it does, the link needs the **Site URL** from step 5; the app then asks them to choose a password.
+- After running `access.sql`, Supabase refuses any account whose email isn't on the access list, including ones you add yourself — put the email on the list first.
+
+### Email confirmation
+
+Supabase asks new people to confirm their email by default, which runs into the same built-in email limits. Two ways to deal with it:
+
+- **Simplest:** Authentication → Sign In / Providers → Email → turn off **Confirm email**. Registering then signs people straight in. The access list still decides who can register; the catch is that whoever registers an address first owns it, so add people to the list just before they register.
+- **Best:** set up your own email sender (Authentication → Emails → SMTP settings; [Resend](https://resend.com)'s free tier works) and keep confirmation on. That also makes **Forgot password?** emails reach people.
 
 ## Data residency note
 Supabase's nearest region is typically East US, not Canada. If Concordia has rules about where applicant data lives, check with IT/REB before loading real data. The schema is standard Postgres and ports to an approved host if needed.
