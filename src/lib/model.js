@@ -206,6 +206,38 @@ export function rosterGaps(profiles, missingProfiles) {
   };
 }
 
+/* ============================================================
+   Team tracker
+
+   One row per team, one column per thing we are waiting on — a document
+   submitted, a meeting scheduled. Each cell says where it stands. The list
+   of things is editable per phase; the answers live on the team itself, so
+   they travel with it.
+   ============================================================ */
+export const TRACK_STATUS = [
+  { id: "notdone", label: "Not done", fg: T.muted, bg: "#EFEAE5" },
+  { id: "scheduled", label: "Scheduled", fg: T.info, bg: "#DCEBF3" },
+  { id: "followup", label: "Needs follow-up", fg: T.warnInk, bg: T.warnTint },
+  { id: "done", label: "Done", fg: T.ok, bg: T.okTint },
+];
+export const trackStatus = (rec, itemId) =>
+  TRACK_STATUS.find((x) => x.id === ((rec && rec.tracker) || {})[itemId]) || TRACK_STATUS[0];
+
+/** Counts across the running teams in view. */
+export function trackerSummary(teams, items) {
+  const rows = (teams || []).filter(isRunning);
+  const cells = rows.flatMap((t) => (items || []).map((it) => ({ team: t, st: trackStatus(t, it.id).id })));
+  const followTeams = new Set(cells.filter((c) => c.st === "followup").map((c) => c.team.id));
+  return {
+    teams: rows.length,
+    total: cells.length,
+    done: cells.filter((c) => c.st === "done").length,
+    scheduled: cells.filter((c) => c.st === "scheduled").length,
+    followup: cells.filter((c) => c.st === "followup").length,
+    teamsFollowup: followTeams.size,
+  };
+}
+
 export { ISO_RE };
 
 

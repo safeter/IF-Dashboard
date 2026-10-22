@@ -27,7 +27,7 @@ import {
   deliverableState, isOutstanding, deliverableSummary, profileDeliverableState, SOON_DAYS,
   parseMembers, TEAM_STATUS, statusOf, isRunning, isFunded, rosterGaps, lastCheckin, CHECKIN_DAYS,
   JUDGE_MAX, judgeScores, hasBreakdown, totalScore, judgesIn,
-  REQUIRED_DOCS, docsSummary,
+  REQUIRED_DOCS, docsSummary, TRACK_STATUS, trackStatus, trackerSummary,
 } from "./lib/model";
 import {
   LayoutGrid, Megaphone, ListChecks, CalendarDays,
@@ -79,6 +79,53 @@ const STYLE = `
 .tabrow{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;
   margin-top:18px;padding-bottom:14px;border-bottom:1px solid ${T.hairline}}
 .btn.sm{font-size:12px;padding:6px 12px}
+/* Headline figures: one quiet strip instead of a row of big tiles. */
+.figures{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));padding:14px 4px;margin-top:16px}
+.figures .fig{padding:2px 16px;border-left:1px solid ${T.hairline};min-width:0}
+.figures .fig:first-child{border-left:none}
+.figures .n{font-size:26px;font-weight:800;letter-spacing:-.03em;line-height:1.05}
+.figures .l{font-size:12px;color:${T.muted};margin-top:4px}
+@media(max-width:600px){.figures{grid-template-columns:repeat(2,minmax(0,1fr));row-gap:12px}
+  .figures .fig:nth-child(odd){border-left:none}.figures .n{font-size:22px}}
+/* The filter that every tab of a phase page shares. */
+.filtersel{display:inline-flex;align-items:center;gap:7px;border:1px solid ${T.hairline};border-radius:999px;
+  padding:2px 6px 2px 12px;background:${T.surface};min-height:32px}
+.filtersel select{border:none;background:transparent;font-family:inherit;font-size:12.5px;font-weight:600;color:${T.ink};
+  max-width:230px;min-height:26px;cursor:pointer}
+/* A phase page's Teams tab: the list of teams beside the team in view. */
+.workspace{display:grid;grid-template-columns:240px minmax(0,1fr);gap:16px;align-items:start;margin-top:16px}
+.teamlist{padding:8px;position:sticky;top:68px;max-height:calc(100vh - 84px);overflow:auto}
+.tlgroup+.tlgroup{margin-top:8px;padding-top:8px;border-top:1px solid ${T.hairline}}
+.teamrow{display:flex;align-items:flex-start;gap:9px;width:100%;text-align:left;padding:8px 10px;border-radius:10px;min-height:44px}
+.teamrow:hover{background:${T.paper}}
+.teamrow.on{background:${T.paper};outline:1px solid ${T.hairline};outline-offset:-1px}
+.teamrow.on .tname{color:var(--accent)}
+.teamdetail{scroll-margin-top:64px}
+.tdot{width:8px;height:8px;border-radius:999px;flex:0 0 8px;margin-top:6px;border:1.5px solid transparent}
+.tname{display:block;font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tmeta{display:block;font-size:11px;color:${T.muted};margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+.teamdetail{display:flex;flex-direction:column;gap:14px;min-width:0}
+.teamname{display:block;width:100%;font-size:23px;font-weight:700;color:${T.ink};background:transparent;
+  border:1px solid transparent;border-radius:9px;padding:2px 8px;margin-left:-9px}
+.teamname:hover{border-color:${T.hairline}}
+.teamname:focus{border-color:var(--accent);outline:none;background:${T.surface}}
+.teamsum{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.teamcols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;align-items:start}
+.teamcols>div{display:flex;flex-direction:column;gap:14px;min-width:0}
+.teamfoot{display:flex;justify-content:flex-end}
+.mini.danger{color:#B42318;border-color:${T.dangerTint}}
+@media(max-width:1279px){.teamcols{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:1000px){.workspace{grid-template-columns:minmax(0,1fr)}.teamlist{position:static;max-height:260px}}
+@media(max-width:600px){.peoplegrid{grid-template-columns:repeat(2,minmax(0,1fr)) !important}}
+/* Tracker grid */
+.tracktable th,.tracktable td{white-space:nowrap}
+.tracktable th[scope=row]{border-bottom:1px solid ${T.hairline};text-transform:none;letter-spacing:0;font-family:inherit;color:${T.ink}}
+.tracksel{font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:11px;font-weight:600;
+  padding:4px 8px;border-radius:999px;border:1px solid;min-height:28px;cursor:pointer}
+.tlink{font-weight:600;font-size:13px;text-align:left;min-height:28px;text-decoration:underline;
+  text-decoration-color:${T.hairline};text-underline-offset:3px}
+.tlink:hover{text-decoration-color:currentColor}
 @media(max-width:1000px){.gcs .grid.resp4{grid-template-columns:repeat(2,minmax(0,1fr)) !important}}
 
 /* primitives */
@@ -280,8 +327,22 @@ const CURRENT = NOW.toLocaleString("en-US", { month: "short" }); // e.g. "Jun" �
 const ARRAY_SECTIONS = new Set([
   "cycles", "calls", "teams", "classes", "pizza", "sessions",
   "events", "demochecklist", "road", "cohorts", "alumni", "results",
-  "eventChecklists", "teamProfiles", "kb", "phase2Teams",
+  "eventChecklists", "teamProfiles", "kb", "phase2Teams", "trackerItems", "p2TrackerItems",
 ]);
+
+/* Team tracker: what to chase each team for. Editable on the Tracker tab. */
+const P1_TRACK_SEED = [
+  { id: "t-agreement", label: "Participation agreement" },
+  { id: "t-budget", label: "Budget submitted" },
+  { id: "t-calendar", label: "Calendar of activities" },
+  { id: "t-onboard", label: "Onboarding meeting" },
+];
+const P2_TRACK_SEED = [
+  { id: "t2-agreement", label: "Funding agreement" },
+  { id: "t2-budget", label: "Budget submitted" },
+  { id: "t2-milestones", label: "Milestone plan" },
+  { id: "t2-kickoff", label: "Kick-off meeting" },
+];
 
 /* cycles: the registry lives in cloud storage (global scope); this is only the first-run seed */
 const SEED_CYCLES = [{ id: "2026-27", label: "2026–27", status: "active" }];
@@ -673,7 +734,7 @@ function LinkList({ links, onChange, addLabel = "Link", placeholder = "Paste a D
  * in the free list beneath. The record carries `docs.{budget,calendar}` and
  * `links`, so Phase I profiles and Phase II teams share one shape.
  */
-function TeamDocs({ rec, onChange }) {
+function TeamDocs({ rec, onChange, bare }) {
   const docs = rec.docs || {};
   const sum = docsSummary(rec);
   const setDoc = (key, url) => {
@@ -684,8 +745,8 @@ function TeamDocs({ rec, onChange }) {
   };
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 2 }}>
-        <span className="eyebrow">Documents</span>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 2, marginTop: bare ? -4 : 0 }}>
+        {bare ? <span /> : <span className="eyebrow">Documents</span>}
         <span className="mono" style={{ fontSize: 10.5, color: sum.onFile === sum.total ? T.ok : T.warnInk }}
           title={sum.missing.length ? `Missing: ${sum.missing.join(", ")}` : "Budget and calendar both on file"}>
           {sum.onFile}/{sum.total} required on file
@@ -963,6 +1024,8 @@ export default function App() {
   const [activeP2Id, setActiveP2Id] = useState(null);
   const [p2Tab, setP2Tab] = useState("profiles");           // Phase II: profiles | deliverables | contacts
   const [p2CohortFilter, setP2CohortFilter] = useState("all");
+  const [trackerItems, setTrackerItems] = useCloudSection("trackerItems", P1_TRACK_SEED, cycleId);
+  const [p2TrackerItems, setP2TrackerItems] = useCloudSection("p2TrackerItems", P2_TRACK_SEED, "global");
   const [kbTab, setKbTab] = useState("rules");
   const [kbQuery, setKbQuery] = useState("");
   const [copiedId, setCopiedId] = useState(null);
@@ -1301,6 +1364,9 @@ export default function App() {
   /* The same deliverable for many teams at once — most are cohort-wide. */
   const withDeliverable = (rec, title, due) =>
     ({ ...rec, deliverables: [...(rec.deliverables || []), { id: uid(), title, due, status: "pending", note: "" }] });
+  const setTrack = (rec, itemId, status) => ({ ...rec, tracker: { ...(rec.tracker || {}), [itemId]: status } });
+  const trackP1 = (id, itemId, status) => setProfiles((ps) => ps.map((p) => (p.id === id ? setTrack(p, itemId, status) : p)));
+  const followupsOf = (rec, items) => (isRunning(rec) ? items.filter((it) => trackStatus(rec, it.id).id === "followup").length : 0);
   const assignP1 = (title, due, ids) => {
     setProfiles((ps) => ps.map((p) => (ids.includes(p.id) ? withDeliverable(p, title, due) : p)));
     ui.toast(`“${title}” added to ${ids.length} team${ids.length === 1 ? "" : "s"}.`);
@@ -1410,6 +1476,7 @@ export default function App() {
     updP2(pid, { [key]: [...(phase2.find((p) => p.id === pid)?.[key] || []), { id: uid(), ...blank }] });
   const rmP2Sub = (pid, key, subId) =>
     updP2(pid, { [key]: (phase2.find((p) => p.id === pid)?.[key] || []).filter((x) => x.id !== subId) });
+  const trackP2 = (id, itemId, status) => setPhase2((ps) => ps.map((p) => (p.id === id ? setTrack(p, itemId, status) : p)));
   const assignP2 = (title, due, ids) => {
     setPhase2((ps) => ps.map((p) => (ids.includes(p.id) ? withDeliverable(p, title, due) : p)));
     ui.toast(`“${title}” added to ${ids.length} team${ids.length === 1 ? "" : "s"}.`);
@@ -1727,6 +1794,7 @@ export default function App() {
         exportedAt: new Date().toLocaleString("en-CA", { dateStyle: "medium", timeStyle: "short" }),
         judges: JUDGES, stages: STAGES, calls: callList, teams, profiles: profileRows,
         phase2, results, sessions, attendance, classes, pizza,
+        trackerItems: trackerItems || [], p2TrackerItems: p2TrackerItems || [],
       });
       XLSX.writeFile(wb, workbookName(viewedCycle.id, todayISO()));
       ui.toast(`Cycle ${viewedCycle.label} exported to Excel.`);
@@ -2073,7 +2141,7 @@ export default function App() {
     { id: "teams", label: "Phase I teams", Icon: Users, badge: deliverables.outstanding, badgeTone: deliverables.overdue ? T.danger : T.warnInk },
     { id: "phase2", label: "Phase II teams", Icon: Wallet, badge: p2Owed.outstanding, badgeTone: p2Owed.overdue ? T.danger : T.warnInk },
     { id: "planning", label: "Planning", Icon: CalendarCheck },
-    { id: "programming", label: "Programming", Icon: CalendarDays },
+    { id: "programming", label: "Events & attendance", Icon: CalendarDays },
     { id: "knowledge", label: "Knowledge", Icon: BookOpen },
     { id: "cohorts", label: "Cohorts", Icon: Trophy },
   ];
@@ -2354,6 +2422,22 @@ export default function App() {
                         if (quiet1.length || !quiet2.length) { setView("teams"); setTeamsTab("profiles"); if (quiet1[0]) { setProfileCallFilter("all"); setActiveProfileId(quiet1[0].id); } }
                         else { setView("phase2"); setP2Tab("profiles"); setP2CohortFilter("all"); setActiveP2Id(quiet2[0].id); }
                       }}
+                      accent={accent} />
+                  );
+                })()}
+                {(() => {
+                  const f1 = trackerSummary(profiles, trackerItems || []);
+                  const f2 = trackerSummary(p2Teams, p2TrackerItems || []);
+                  const n = f1.followup + f2.followup;
+                  const t = f1.teamsFollowup + f2.teamsFollowup;
+                  const goP2 = f2.followup > f1.followup;
+                  return (
+                    <Alert icon={<ListChecks size={15} />}
+                      text={n
+                        ? `${n} tracker item${n === 1 ? "" : "s"} need${n === 1 ? "s" : ""} a follow-up, across ${t} team${t === 1 ? "" : "s"}${f1.followup && f2.followup ? ` (Phase I ${f1.followup}, Phase II ${f2.followup})` : ""}`
+                        : "Nothing in the team trackers needs a follow-up"}
+                      cta="Open tracker"
+                      onClick={() => { if (goP2) { setView("phase2"); setP2Tab("tracker"); } else { setView("teams"); setTeamsTab("tracker"); } }}
                       accent={accent} />
                   );
                 })()}
@@ -2723,17 +2807,23 @@ export default function App() {
             </>
           )}
 
-          {view === "teams" && (
+          {view === "teams" && (() => {
+            const p1Items = trackerItems || [];
+            const p1Follow = trackerSummary(profiles, p1Items).followup;
+            const openP1 = (pid) => { setActiveProfileId(pid); setProfileCallFilter("all"); setTeamsTab("profiles"); };
+            return (
             <>
               <PageHead title={`Phase I teams · cycle ${viewedCycle.label}`}
-                sub="The seed year, from kickoff to Demo Day: each team's profile, seed budget, documents, deliverables and monthly check-ins. Teams funded at Demo Day carry on under Phase II teams." />
-              <PhaseTabs tab={teamsTab} onTab={setTeamsTab} owed={deliverables}
-                onAdd={() => { const p = blankProfile(null); setProfiles((ps) => [...ps, p]); setTeamsTab("profiles"); setActiveProfileId(p.id); }} />
-              <GroupChips allLabel="All calls" allCount={profileRows.length} value={profileCallFilter} onChange={setProfileCallFilter}
-                groups={teamFilterGroups.map(({ call, teams: ps }) => ({
-                  id: call.id, title: call.topic, accent: call.accent, count: ps.length,
-                  label: `${call.name}${call.topic && call.id !== UNASSIGNED ? ` · ${call.topic}` : ""}`,
-                }))} />
+                sub="The seed year, from kickoff to Demo Day: each team's people, seed budget, documents, deliverables and monthly check-ins. Teams funded at Demo Day carry on under Phase II teams." />
+              <PhaseTabs tab={teamsTab} onTab={setTeamsTab} owed={deliverables} followups={p1Follow}
+                onAdd={() => { const p = blankProfile(null); setProfiles((ps) => [...ps, p]); setTeamsTab("profiles"); setActiveProfileId(p.id); }}
+                filter={{
+                  noun: "Call", value: profileCallFilter, onChange: setProfileCallFilter, allCount: profileRows.length,
+                  options: teamFilterGroups.map(({ call, teams: ps }) => ({
+                    id: call.id, count: ps.length,
+                    label: `${call.name}${call.topic && call.id !== UNASSIGNED ? ` · ${call.topic}` : ""}`,
+                  })),
+                }} />
               {missingProfiles.length > 0 && (
                 <Handoff
                   text={`${missingProfiles.length} team${missingProfiles.length === 1 ? " was" : "s were"} selected but ${missingProfiles.length === 1 ? "isn't" : "aren't"} set up here yet.`}
@@ -2743,7 +2833,7 @@ export default function App() {
               {teamsTab === "contacts" ? (
                 <ContactsTab rows={visibleContacts} groupLabel="Call" showCycle
                   onPrint={(rows) => printContacts(rows, "Phase I")}
-                  emptyText="No contacts in this view. People come from the Members field on each team — one per line, name and email."
+                  emptyText="No contacts in this view. People come from each team's People section — one per line, name and email."
                   tools={archive === null ? (
                     <button className="mini" onClick={loadArchive} disabled={archiveBusy} title="Also read the team profiles stored for every past cycle">
                       {archiveBusy ? "Loading past cycles…" : "+ Include past cycles"}
@@ -2758,89 +2848,107 @@ export default function App() {
                 <DeliverablesTab teams={visibleProfiles} summary={shownDeliverables}
                   scopeNote={profileCallFilter !== "all" ? filteredCallName : ""} elsewhere={deliverables.outstanding}
                   onSubmit={(pid, id) => updSub(pid, "deliverables", id, { status: "submitted" })}
-                  onOpen={(pid) => { setActiveProfileId(pid); setProfileCallFilter("all"); setTeamsTab("profiles"); }}
-                  onAssign={assignP1} />
+                  onOpen={openP1} onAssign={assignP1} />
+              ) : teamsTab === "tracker" ? (
+                <TrackerTab teams={visibleProfiles} items={p1Items} setItems={setTrackerItems}
+                  scopeNote={profileCallFilter !== "all" ? filteredCallName : ""}
+                  onSet={trackP1} onOpen={openP1} />
               ) : profiles.length === 0 ? (
                 <div className="card" style={{ marginTop: 16, color: T.muted, fontSize: 13.5 }}>
                   No Phase I teams yet. They come from the teams marked Selected in Selection, or add one with “Add team”.
                 </div>
               ) : (
                 <>
-                  <div className="grid resp4" style={{ gridTemplateColumns: "repeat(4,minmax(0,1fr))", marginTop: 16, gap: 12 }}>
-                    <Stat n={visibleProfiles.filter(isRunning).length} l={`Teams running${profileCallFilter !== "all" ? ` in ${filteredCallName}` : ""}`} accent={accent} />
-                    <Stat n={`$${cohortBudget.allocated.toLocaleString()}`} l={`Seed budgets · ${cohortBudget.withBudget} team${cohortBudget.withBudget === 1 ? "" : "s"}`} accent={accent} />
-                    <Stat n={`$${cohortBudget.spent.toLocaleString()}`} l="Spent so far" accent={accent} />
-                    <Stat n={`$${Math.max(cohortBudget.allocated - cohortBudget.spent, 0).toLocaleString()}`}
-                      l={cohortBudget.over > 0 ? `Unspent · ${cohortBudget.over} team${cohortBudget.over === 1 ? "" : "s"} over budget` : "Unspent"}
-                      accent={cohortBudget.over > 0 ? T.danger : accent} />
-                  </div>
+                  <Figures items={[
+                    { n: visibleProfiles.filter(isRunning).length, l: `Teams running${profileCallFilter !== "all" ? ` in ${filteredCallName}` : ""}` },
+                    { n: `$${cohortBudget.allocated.toLocaleString()}`, l: `Seed budgets · ${cohortBudget.withBudget} team${cohortBudget.withBudget === 1 ? "" : "s"}` },
+                    { n: `$${cohortBudget.spent.toLocaleString()}`, l: "Spent so far" },
+                    { n: `$${Math.max(cohortBudget.allocated - cohortBudget.spent, 0).toLocaleString()}`,
+                      l: cohortBudget.over > 0 ? `Unspent · ${cohortBudget.over} over budget` : "Unspent",
+                      tone: cohortBudget.over > 0 ? T.danger : undefined },
+                  ]} />
 
                   {visibleProfiles.length === 0 ? (
-                    <div className="card" style={{ marginTop: 14, color: T.muted, fontSize: 13.5 }}>
+                    <div className="card" style={{ marginTop: 16, color: T.muted, fontSize: 13.5 }}>
                       No teams in this call yet. Open a team from another call and change its call, or add one.
                     </div>
                   ) : (
-                    <TeamPicker activeId={activeProfile && activeProfile.id} onPick={setActiveProfileId}
-                      moneyOf={(p) => ({ granted: budgetOf(p), used: spentOf(p) })}
-                      groups={shownProfileGroups.map(({ call, teams: ps }) => ({
-                        id: call.id, accent: call.accent, teams: ps,
-                        label: call.id === UNASSIGNED ? "Unassigned" : `${call.name} call`,
-                      }))} />
-                  )}
-
-                  {activeProfile && (
-                    <div className="grid resp" style={{ gridTemplateColumns: "1fr 1.3fr", marginTop: 14 }}>
-                      <TeamProfile rec={activeProfile} name={activeProfile.name} notesKey="notes"
-                        onName={(v) => updProfile(activeProfile.id, { name: v })}
-                        onChange={(patch) => updProfile(activeProfile.id, patch)}
-                        onRemove={() => rmProfile(activeProfile.id)}
-                        membersHint="No members yet, so this team won't appear on attendance lists or in Contacts."
-                        groupControl={
-                          <select value={profileCall(activeProfile).id}
-                            aria-label={`Call for ${activeProfile.name || "this team"}`}
-                            title="Which call this team applied to — changing it moves the team to that group"
-                            onChange={(e) => setProfileCall(activeProfile.id, e.target.value)}
-                            style={{ fontFamily: MONO, fontSize: 11.5, padding: "5px 7px", borderRadius: 8, background: T.surface, maxWidth: 210,
-                                     border: `1px solid ${profileCall(activeProfile).accent}`, color: profileCall(activeProfile).accent, fontWeight: 600 }}>
-                            {callList.map((c) => <option key={c.id} value={c.id}>{c.name}{c.topic ? ` — ${c.topic}` : ""}</option>)}
-                            {profileCall(activeProfile).id === UNASSIGNED && <option value={UNASSIGNED}>Unassigned</option>}
-                          </select>
-                        }
-                        funding={
-                          <FundingBlock grantedLabel="Seed budget" granted={budgetOf(activeProfile)}
-                            usedLabel="Spent so far" used={spentOf(activeProfile)}
-                            footnote="drawn from the team's Financial Services account"
-                            grantedInput={
-                              <span className="moneyfield"><span className="cur">$</span>
-                                <EInput value={activeProfile.budget} mono w="86px" placeholder="0" ariaLabel="Seed-year budget"
-                                  onChange={(v) => updProfile(activeProfile.id, { budget: money(v) })} />
-                              </span>
-                            }
-                            usedInput={
-                              <span className={"moneyfield" + (budgetOf(activeProfile) > 0 && spentOf(activeProfile) === 0 ? " empty" : "")}
-                                title={budgetOf(activeProfile) > 0 && spentOf(activeProfile) === 0 ? "Nothing recorded as spent yet" : undefined}>
-                                <span className="cur">$</span>
-                                <EInput value={activeProfile.spent} mono w="86px" placeholder="0" ariaLabel="Spent so far"
-                                  onChange={(v) => updProfile(activeProfile.id, { spent: money(v) })} />
-                              </span>
+                    <div className="workspace">
+                      <TeamList activeId={activeProfile && activeProfile.id} onPick={setActiveProfileId}
+                        moneyOf={(p) => ({ granted: budgetOf(p), used: spentOf(p) })}
+                        groups={shownProfileGroups.map(({ call, teams: ps }) => ({
+                          id: call.id, accent: call.accent, teams: ps,
+                          label: call.id === UNASSIGNED ? "Unassigned" : `${call.name} call`,
+                        }))} />
+                      {activeProfile && (
+                        <div className="teamdetail">
+                          <TeamHeader rec={activeProfile} name={activeProfile.name}
+                            onName={(v) => updProfile(activeProfile.id, { name: v })}
+                            onChange={(patch) => updProfile(activeProfile.id, patch)}
+                            followups={followupsOf(activeProfile, p1Items)}
+                            groupControl={
+                              <select value={profileCall(activeProfile).id}
+                                aria-label={`Call for ${activeProfile.name || "this team"}`}
+                                title="Which call this team applied to — changing it moves the team to that group"
+                                onChange={(e) => setProfileCall(activeProfile.id, e.target.value)}
+                                style={{ fontFamily: MONO, fontSize: 11.5, padding: "5px 7px", borderRadius: 8, background: T.surface, maxWidth: 210,
+                                         border: `1px solid ${profileCall(activeProfile).accent}`, color: profileCall(activeProfile).accent, fontWeight: 600 }}>
+                                {callList.map((c) => <option key={c.id} value={c.id}>{c.name}{c.topic ? ` — ${c.topic}` : ""}</option>)}
+                                {profileCall(activeProfile).id === UNASSIGNED && <option value={UNASSIGNED}>Unassigned</option>}
+                              </select>
                             } />
-                        } />
-                      <div style={{ display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
-                        <DeliverablesCard items={activeProfile.deliverables}
-                          onAdd={(blank) => addSub(activeProfile.id, "deliverables", blank)}
-                          onUpd={(id, patch) => updSub(activeProfile.id, "deliverables", id, patch)}
-                          onRm={(id) => rmSub(activeProfile.id, "deliverables", id)} />
-                        <CheckinsCard rec={activeProfile}
-                          onAdd={(blank) => addSub(activeProfile.id, "meetings", blank)}
-                          onUpd={(id, patch) => updSub(activeProfile.id, "meetings", id, patch)}
-                          onRm={(id) => rmSub(activeProfile.id, "meetings", id)} />
-                      </div>
+                          <div className="teamcols">
+                            <div>
+                              <PeopleCard rec={activeProfile} onChange={(patch) => updProfile(activeProfile.id, patch)}
+                                membersHint="No members yet, so this team won't appear on attendance lists or in Contacts." />
+                              <FundingBlock grantedLabel="Seed budget" granted={budgetOf(activeProfile)}
+                                usedLabel="Spent so far" used={spentOf(activeProfile)}
+                                footnote="drawn from the team's Financial Services account"
+                                grantedInput={
+                                  <span className="moneyfield"><span className="cur">$</span>
+                                    <EInput value={activeProfile.budget} mono w="86px" placeholder="0" ariaLabel="Seed-year budget"
+                                      onChange={(v) => updProfile(activeProfile.id, { budget: money(v) })} />
+                                  </span>
+                                }
+                                usedInput={
+                                  <span className={"moneyfield" + (budgetOf(activeProfile) > 0 && spentOf(activeProfile) === 0 ? " empty" : "")}
+                                    title={budgetOf(activeProfile) > 0 && spentOf(activeProfile) === 0 ? "Nothing recorded as spent yet" : undefined}>
+                                    <span className="cur">$</span>
+                                    <EInput value={activeProfile.spent} mono w="86px" placeholder="0" ariaLabel="Spent so far"
+                                      onChange={(v) => updProfile(activeProfile.id, { spent: money(v) })} />
+                                  </span>
+                                } />
+                              <Section title="Documents"><TeamDocs rec={activeProfile} onChange={(patch) => updProfile(activeProfile.id, patch)} bare /></Section>
+                            </div>
+                            <div>
+                              <DeliverablesCard items={activeProfile.deliverables}
+                                onAdd={(blank) => addSub(activeProfile.id, "deliverables", blank)}
+                                onUpd={(id, patch) => updSub(activeProfile.id, "deliverables", id, patch)}
+                                onRm={(id) => rmSub(activeProfile.id, "deliverables", id)} />
+                              <CheckinsCard rec={activeProfile}
+                                onAdd={(blank) => addSub(activeProfile.id, "meetings", blank)}
+                                onUpd={(id, patch) => updSub(activeProfile.id, "meetings", id, patch)}
+                                onRm={(id) => rmSub(activeProfile.id, "meetings", id)} />
+                            </div>
+                          </div>
+                          <Section title="Notes">
+                            <NoteField value={activeProfile.notes} onChange={(v) => updProfile(activeProfile.id, { notes: v })} label="Notes"
+                              placeholder="Anything worth remembering — context, risks, decisions, who said what. Grows as you type." minRows={4} />
+                          </Section>
+                          <div className="teamfoot">
+                            <button className="mini danger" onClick={() => rmProfile(activeProfile.id)}>
+                              <Trash2 size={11} style={{ verticalAlign: -1, marginRight: 4 }} />Remove {activeProfile.name || "this team"}…
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </>
               )}
             </>
-          )}
+            );
+          })()}
 
           {view === "planning" && (
             <>
@@ -3080,7 +3188,7 @@ export default function App() {
 
           {view === "programming" && (
             <>
-              <PageHead title="Programming · Sep → Mar"
+              <PageHead title="Events & attendance · Sep → Mar"
                 sub="The presentation series that leads each cohort to Demo Day, and who came. Tick a session once it's held." />
               <TabRow right={progTab === "sessions" ? (
                 <>
@@ -3517,73 +3625,83 @@ export default function App() {
             </>
           )}
 
-          {view === "phase2" && (
+          {view === "phase2" && (() => {
+            const p2Items = p2TrackerItems || [];
+            const p2Follow = trackerSummary(p2Teams, p2Items).followup;
+            const openP2 = (pid) => { setActiveP2Id(pid); setP2CohortFilter("all"); setP2Tab("profiles"); };
+            return (
             <>
               <PageHead title="Phase II teams · all cohorts"
-                sub="The maturation year — up to $50,000 a year, paid in tranches: each team's profile, award and payments, documents, deliverables and check-ins." />
-              <PhaseTabs tab={p2Tab} onTab={setP2Tab} owed={p2Owed} onAdd={addP2} />
-              <GroupChips allLabel="All cohorts" allCount={p2Teams.length} value={p2Filter} onChange={setP2CohortFilter}
-                groups={p2Cohorts.map((c) => ({ id: c, label: c, accent: T.burgundy, count: p2Teams.filter((p) => p2CohortOf(p) === c).length }))} />
+                sub="The maturation year — up to $50,000 a year, paid in tranches: each team's people, award and payments, documents, deliverables and check-ins." />
+              <PhaseTabs tab={p2Tab} onTab={setP2Tab} owed={p2Owed} followups={p2Follow} onAdd={addP2}
+                filter={{
+                  noun: "Cohort", value: p2Filter, onChange: setP2CohortFilter, allCount: p2Teams.length,
+                  options: p2Cohorts.map((c) => ({ id: c, label: c, count: p2Teams.filter((p) => p2CohortOf(p) === c).length })),
+                }} />
               {missingP2.length > 0 && (
                 <Handoff
-                  text={`${missingP2.length} team${missingP2.length === 1 ? " was" : "s were"} awarded Phase II at Demo Day ${viewedCycle.label} but ${missingP2.length === 1 ? "isn't" : "aren't"} here yet. Members, supervisor and mentor come across from Phase I.`}
+                  text={`${missingP2.length} team${missingP2.length === 1 ? " was" : "s were"} awarded Phase II at Demo Day ${viewedCycle.label} but ${missingP2.length === 1 ? "isn't" : "aren't"} here yet. Their people come across from Phase I.`}
                   action={`Add ${missingP2.length === 1 ? "it" : "them"}`} onClick={pullP2FromResults} />
               )}
 
               {p2Tab === "contacts" ? (
                 <ContactsTab rows={p2ContactRows} groupLabel="Cohort"
                   onPrint={(rows) => printContacts(rows, "Phase II")}
-                  emptyText="No contacts in this view. People come from the Members field on each Phase II team — one per line, name and email." />
+                  emptyText="No contacts in this view. People come from each team's People section — one per line, name and email." />
               ) : p2Tab === "deliverables" ? (
                 <DeliverablesTab teams={visibleP2} summary={shownP2Owed}
                   scopeNote={p2Filter !== "all" ? p2Filter : ""} elsewhere={p2Owed.outstanding}
                   onSubmit={(pid, id) => updP2Sub(pid, "deliverables", id, { status: "submitted" })}
-                  onOpen={(pid) => { setActiveP2Id(pid); setP2CohortFilter("all"); setP2Tab("profiles"); }}
-                  onAssign={assignP2} />
+                  onOpen={openP2} onAssign={assignP2} />
+              ) : p2Tab === "tracker" ? (
+                <TrackerTab teams={visibleP2} items={p2Items} setItems={setP2TrackerItems}
+                  scopeNote={p2Filter !== "all" ? p2Filter : ""}
+                  onSet={trackP2} onOpen={openP2} />
               ) : p2Teams.length === 0 ? (
                 <div className="card" style={{ marginTop: 16, color: T.muted, fontSize: 13.5 }}>
                   No Phase II teams yet. They come from the teams awarded Phase II at Demo Day, or add one with “Add team”.
                 </div>
               ) : (() => {
                 const funded = visibleP2.filter(isFunded);
+                const withAward = funded.filter((p) => Number(p.awarded) > 0).length;
                 const totAwarded = funded.reduce((s, p) => s + (Number(p.awarded) || 0), 0);
                 const totPaid = funded.reduce((s, p) => s + p2Paid(p), 0);
                 const toPay = visibleP2.filter(isRunning).reduce((s, p) => s + Math.max((Number(p.awarded) || 0) - p2Paid(p), 0), 0);
-                const scope = p2Filter !== "all" ? ` in ${p2Filter}` : "";
+                const paid = activeP2 ? p2Paid(activeP2) : 0;
+                const payN = activeP2 ? (activeP2.payments || []).length : 0;
+                const blankPays = activeP2 ? (activeP2.payments || []).filter((x) => !(Number(x.amount) > 0)).length : 0;
+                const awarded = activeP2 ? Number(activeP2.awarded) || 0 : 0;
                 return (
                   <>
-                    <div className="grid resp4" style={{ gridTemplateColumns: "repeat(4,minmax(0,1fr))", marginTop: 16, gap: 12 }}>
-                      <Stat n={visibleP2.filter(isRunning).length} l={`Teams running${scope}`} accent={accent} />
-                      <Stat n={`$${totAwarded.toLocaleString()}`} l={`Awarded · ${funded.filter((p) => Number(p.awarded) > 0).length} team${funded.filter((p) => Number(p.awarded) > 0).length === 1 ? "" : "s"}`} accent={accent} />
-                      <Stat n={`$${totPaid.toLocaleString()}`} l="Paid out so far" accent={accent} />
-                      <Stat n={`$${toPay.toLocaleString()}`} l="Still to pay running teams" accent={accent} />
-                    </div>
+                    <Figures items={[
+                      { n: visibleP2.filter(isRunning).length, l: `Teams running${p2Filter !== "all" ? ` in ${p2Filter}` : ""}` },
+                      { n: `$${totAwarded.toLocaleString()}`, l: `Awarded · ${withAward} team${withAward === 1 ? "" : "s"}` },
+                      { n: `$${totPaid.toLocaleString()}`, l: "Paid out so far" },
+                      { n: `$${toPay.toLocaleString()}`, l: "Still to pay" },
+                    ]} />
 
-                    <TeamPicker activeId={activeP2 && activeP2.id} onPick={setActiveP2Id}
-                      moneyOf={(p) => ({ granted: Number(p.awarded) || 0, used: p2Paid(p) })}
-                      groups={(p2Filter === "all" ? p2Cohorts : [p2Filter]).map((c) => ({
-                        id: c, label: c, accent: T.burgundy, teams: p2Teams.filter((p) => p2CohortOf(p) === c),
-                      }))} />
-
-                    {activeP2 && (() => {
-                      const paid = p2Paid(activeP2);
-                      const payN = (activeP2.payments || []).length;
-                      const blankPays = (activeP2.payments || []).filter((x) => !(Number(x.amount) > 0)).length;
-                      const awarded = Number(activeP2.awarded) || 0;
-                      return (
-                        <div className="grid resp" style={{ gridTemplateColumns: "1fr 1.3fr", marginTop: 14 }}>
-                          <TeamProfile rec={activeP2} name={activeP2.team} notesKey="note"
+                    <div className="workspace">
+                      <TeamList activeId={activeP2 && activeP2.id} onPick={setActiveP2Id}
+                        moneyOf={(p) => ({ granted: Number(p.awarded) || 0, used: p2Paid(p) })}
+                        groups={(p2Filter === "all" ? p2Cohorts : [p2Filter]).map((c) => ({
+                          id: c, label: c, accent: T.burgundy, teams: p2Teams.filter((p) => p2CohortOf(p) === c),
+                        }))} />
+                      {activeP2 && (
+                        <div className="teamdetail">
+                          <TeamHeader rec={activeP2} name={activeP2.team}
                             onName={(v) => updP2(activeP2.id, { team: v })}
                             onChange={(patch) => updP2(activeP2.id, patch)}
-                            onRemove={() => rmP2(activeP2.id)}
+                            followups={followupsOf(activeP2, p2Items)}
                             origin={activeP2.fromCycle ? `Came from Phase I · cycle ${activeP2.fromCycle}` : null}
-                            membersHint="No members yet, so nobody on this team appears in Contacts."
                             groupControl={
                               <span title="Which cohort this team belongs to" style={{ border: `1px solid ${T.burgundy}`, borderRadius: 8, display: "inline-flex" }}>
                                 <EInput value={activeP2.cohort} onChange={(v) => updP2(activeP2.id, { cohort: v })} placeholder="Cohort" mono w="104px" ariaLabel="Cohort" />
                               </span>
-                            }
-                            funding={
+                            } />
+                          <div className="teamcols">
+                            <div>
+                              <PeopleCard rec={activeP2} onChange={(patch) => updP2(activeP2.id, patch)}
+                                membersHint="No members yet, so nobody on this team appears in Contacts." />
                               <FundingBlock grantedLabel="Award ($/yr)" granted={awarded}
                                 usedLabel="Paid out" used={paid}
                                 warning={awarded > MAX_AWARD ? `above the $${MAX_AWARD.toLocaleString()}/yr maximum` : null}
@@ -3603,29 +3721,41 @@ export default function App() {
                                     ${paid.toLocaleString()}
                                   </span>
                                 } />
-                            } />
-                          <div style={{ display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
-                            <DeliverablesCard items={activeP2.deliverables}
-                              onAdd={(blank) => addP2Sub(activeP2.id, "deliverables", blank)}
-                              onUpd={(id, patch) => updP2Sub(activeP2.id, "deliverables", id, patch)}
-                              onRm={(id) => rmP2Sub(activeP2.id, "deliverables", id)} />
-                            <CheckinsCard rec={activeP2}
-                              onAdd={(blank) => addP2Sub(activeP2.id, "meetings", blank)}
-                              onUpd={(id, patch) => updP2Sub(activeP2.id, "meetings", id, patch)}
-                              onRm={(id) => rmP2Sub(activeP2.id, "meetings", id)} />
-                            <PaymentsCard rec={activeP2}
-                              onAdd={(blank) => addP2Sub(activeP2.id, "payments", blank)}
-                              onUpd={(id, patch) => updP2Sub(activeP2.id, "payments", id, patch)}
-                              onRm={(id) => rmP2Sub(activeP2.id, "payments", id)} />
+                              <PaymentsCard rec={activeP2}
+                                onAdd={(blank) => addP2Sub(activeP2.id, "payments", blank)}
+                                onUpd={(id, patch) => updP2Sub(activeP2.id, "payments", id, patch)}
+                                onRm={(id) => rmP2Sub(activeP2.id, "payments", id)} />
+                              <Section title="Documents"><TeamDocs rec={activeP2} onChange={(patch) => updP2(activeP2.id, patch)} bare /></Section>
+                            </div>
+                            <div>
+                              <DeliverablesCard items={activeP2.deliverables}
+                                onAdd={(blank) => addP2Sub(activeP2.id, "deliverables", blank)}
+                                onUpd={(id, patch) => updP2Sub(activeP2.id, "deliverables", id, patch)}
+                                onRm={(id) => rmP2Sub(activeP2.id, "deliverables", id)} />
+                              <CheckinsCard rec={activeP2}
+                                onAdd={(blank) => addP2Sub(activeP2.id, "meetings", blank)}
+                                onUpd={(id, patch) => updP2Sub(activeP2.id, "meetings", id, patch)}
+                                onRm={(id) => rmP2Sub(activeP2.id, "meetings", id)} />
+                            </div>
+                          </div>
+                          <Section title="Notes">
+                            <NoteField value={activeP2.note} onChange={(v) => updP2(activeP2.id, { note: v })} label="Notes"
+                              placeholder="Anything worth remembering — context, risks, decisions, who said what. Grows as you type." minRows={4} />
+                          </Section>
+                          <div className="teamfoot">
+                            <button className="mini danger" onClick={() => rmP2(activeP2.id)}>
+                              <Trash2 size={11} style={{ verticalAlign: -1, marginRight: 4 }} />Remove {activeP2.team || "this team"}…
+                            </button>
                           </div>
                         </div>
-                      );
-                    })()}
+                      )}
+                    </div>
                   </>
                 );
               })()}
             </>
-          )}
+            );
+          })()}
         </div>
       </div>
     </div>
@@ -3856,12 +3986,27 @@ function AddCallCard({ draft, setDraft, palette, onAdd }) {
    same in either phase; Phase II adds its payment ledger.
    ============================================================ */
 
-/** Tabs + the one action every tab shares. */
-function PhaseTabs({ tab, onTab, owed, onAdd }) {
+/** Tabs on the left; the filter and the one action every tab shares on the right. */
+function PhaseTabs({ tab, onTab, owed, followups, filter, onAdd }) {
   return (
-    <TabRow right={<button className="btn ghost sm" onClick={onAdd}><Plus size={13} /> Add team</button>}>
+    <TabRow right={
+      <>
+        <label className="filtersel" title={`Show one ${filter.noun} or all of them — applies to every tab`}>
+          <span className="eyebrow">{filter.noun}</span>
+          <select value={filter.value} onChange={(e) => filter.onChange(e.target.value)} aria-label={`Filter by ${filter.noun}`}>
+            <option value="all">All · {filter.allCount}</option>
+            {filter.options.map((o) => <option key={o.id} value={o.id}>{o.label} · {o.count}</option>)}
+          </select>
+        </label>
+        <button className="btn ghost sm" onClick={onAdd}><Plus size={13} /> Add team</button>
+      </>
+    }>
       <div className="tabs">
         <button className={tab === "profiles" ? "on" : ""} onClick={() => onTab("profiles")}>Teams</button>
+        <button className={tab === "tracker" ? "on" : ""} onClick={() => onTab("tracker")}>
+          Tracker
+          {followups > 0 && <span className="badge" style={{ marginLeft: 6, background: T.warnInk }} title="Needs follow-up">{followups}</span>}
+        </button>
         <button className={tab === "deliverables" ? "on" : ""} onClick={() => onTab("deliverables")}>
           Deliverables
           {owed.outstanding > 0 && (
@@ -3874,22 +4019,15 @@ function PhaseTabs({ tab, onTab, owed, onAdd }) {
   );
 }
 
-/** One filter, shared by every tab: Phase I filters by call, Phase II by cohort. */
-function GroupChips({ allLabel, allCount, groups, value, onChange }) {
+/** Headline figures in one quiet strip, so the work below stays above the fold. */
+function Figures({ items }) {
   return (
-    <div className="chiprow" style={{ marginTop: 14 }}>
-      <button className={"chip chipx" + (value === "all" ? " on" : "")} onClick={() => onChange("all")}>
-        <span className="lbl">{allLabel}</span><span className="n">{allCount}</span>
-      </button>
-      {groups.map((g) => (
-        <button key={g.id} title={g.title || g.label}
-          className={"chip chipx" + (value === g.id ? " on" : "")}
-          style={value === g.id
-            ? { background: g.accent, borderColor: g.accent, color: "#fff" }
-            : { borderColor: g.accent, color: g.accent }}
-          onClick={() => onChange(g.id)}>
-          <span className="lbl">{g.label}</span><span className="n">{g.count}</span>
-        </button>
+    <div className="card figures">
+      {items.map((f) => (
+        <div key={f.l} className="fig">
+          <div className="n disp" style={{ color: f.tone || "var(--accent)" }}>{f.n}</div>
+          <div className="l">{f.l}</div>
+        </div>
       ))}
     </div>
   );
@@ -3905,100 +4043,122 @@ function Handoff({ text, action, onClick }) {
   );
 }
 
-/** Team chips, grouped. Each carries what needs chasing without opening it. */
-function TeamPicker({ groups, activeId, onPick, moneyOf }) {
-  return groups.map(({ id, label, accent, teams }) => {
-    if (!teams.length) return null;
-    return (
-      <div key={id} style={{ marginTop: 14 }}>
-        <div className="eyebrow" style={{ marginBottom: 7, color: accent }}>
-          {label} · {teams.length} team{teams.length === 1 ? "" : "s"}
-        </div>
-        <div className="chiprow">
-          {[...teams].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => {
-            const worst = isRunning(p) ? profileDeliverableState(p) : null;
-            const st = statusOf(p);
-            const on = activeId === p.id;
-            const running = isRunning(p);
-            const cin = lastCheckin(p);
-            const m = moneyOf(p);
-            const hint = [p.name || "Untitled", st.id !== "active" ? st.label : null, worst ? worst.label : null,
-              running && cin.stale ? `last check-in: ${cin.label.toLowerCase()}` : null].filter(Boolean).join(" — ");
-            return (
-              <button key={p.id} title={hint}
-                className={"chip" + (on ? " on" : "")} onClick={() => onPick(p.id)}
-                style={on
-                  ? { display: "inline-flex", alignItems: "center", gap: 7, background: accent, borderColor: accent }
-                  : { display: "inline-flex", alignItems: "center", gap: 7, borderColor: accent,
-                      opacity: st.id === "withdrawn" ? 0.55 : 1, textDecoration: st.id === "withdrawn" ? "line-through" : "none" }}>
-                {st.id === "withdrawn" && <Ban size={11} style={{ flex: "0 0 auto", color: on ? "#fff" : T.muted }} />}
-                {st.id === "completed" && <CheckCircle2 size={11} style={{ flex: "0 0 auto", color: on ? "#fff" : T.info }} />}
-                {running && worst && <span style={{ width: 7, height: 7, borderRadius: 999, background: on ? "#fff" : worst.fg, flex: "0 0 7px" }} />}
-                {p.name || "Untitled"}
-                {st.id === "atrisk" && <span className="mono" style={{ fontSize: 9.5, color: on ? "#fff" : st.fg }}>at risk</span>}
-                {m.granted > 0 && (
-                  <span className="mono" style={{ fontSize: 10, color: on ? "#fff" : m.used >= m.granted ? T.ok : T.muted, opacity: on ? 0.9 : 1 }}>
-                    ${m.used.toLocaleString()}/{`$${m.granted.toLocaleString()}`}
+/** "$12.5k" — money short enough for a one-line list row. */
+const kMoney = (n) => (n >= 1000 ? `$${(Math.round(n / 100) / 10).toLocaleString()}k` : `$${n.toLocaleString()}`);
+
+/** The teams, as a list beside the team in view. Each row carries what needs
+    chasing — worst deliverable, at risk, a quiet spell — without opening it. */
+function TeamList({ groups, activeId, onPick, moneyOf }) {
+  return (
+    <nav className="card teamlist" aria-label="Teams">
+      {groups.map(({ id, label, accent, teams }) => {
+        if (!teams.length) return null;
+        return (
+          <div key={id} className="tlgroup">
+            <div className="eyebrow" style={{ color: accent, padding: "4px 10px 6px" }}>{label} · {teams.length}</div>
+            {[...teams].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => {
+              const st = statusOf(p);
+              const running = isRunning(p);
+              const worst = running ? profileDeliverableState(p) : null;
+              const cin = lastCheckin(p);
+              const m = moneyOf(p);
+              const on = activeId === p.id;
+              return (
+                <button key={p.id} className={"teamrow" + (on ? " on" : "")} aria-current={on ? "true" : undefined}
+                  onClick={() => {
+                    onPick(p.id);
+                    // Stacked on a phone, the team opens below the list: take the reader to it.
+                    if (window.innerWidth <= 1000) setTimeout(() => { const el = document.querySelector(".teamdetail"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }, 50);
+                  }}
+                  title={[st.id !== "active" ? st.label : null, worst ? worst.label : null, running && cin.stale ? `last check-in: ${cin.label.toLowerCase()}` : null].filter(Boolean).join(" · ") || undefined}>
+                  <span className="tdot" style={{ background: !running ? "transparent" : worst ? worst.fg : T.ok, borderColor: !running ? T.muted : "transparent" }} />
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span className="tname" style={st.id === "withdrawn" ? { textDecoration: "line-through", color: T.muted } : undefined}>{p.name || "Untitled"}</span>
+                    <span className="tmeta">
+                      {st.id !== "active" ? st.label : running && cin.stale ? "check-in due" : "on track"}
+                      {m.granted > 0 ? ` · ${kMoney(m.used)} of ${kMoney(m.granted)}` : ""}
+                    </span>
                   </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-    );
-  });
+                </button>
+              );
+            })}
+          </div>
+        );
+      })}
+    </nav>
+  );
 }
 
-/** Who the team is. The same fields, in the same order, in both phases. */
-function TeamProfile({ rec, name, onName, notesKey, onChange, groupControl, onRemove, origin, funding, membersHint }) {
+/** Which team this is, how it is doing, and the settings that apply to all of it. */
+function TeamHeader({ rec, name, onName, onChange, groupControl, origin, followups }) {
   const st = statusOf(rec);
+  const running = isRunning(rec);
+  const out = running ? (rec.deliverables || []).filter(isOutstanding) : [];
+  const worst = running ? profileDeliverableState(rec) : null;
+  const cin = lastCheckin(rec);
+  const ds = docsSummary(rec);
   return (
-    <div className="card">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
-        <div className="eyebrow">Profile</div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-          {groupControl}
-          <IconBtn title="Remove team" onClick={onRemove}><Trash2 size={14} /></IconBtn>
+    <div className="card teamhead">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ flex: "1 1 260px", minWidth: 0 }}>
+          <input className="teamname disp" value={name || ""} onChange={(e) => onName(e.target.value)} placeholder="Team name" aria-label="Team name" />
+          {origin && <div className="mono" style={{ fontSize: 11, color: T.muted, marginTop: 2 }}>{origin}</div>}
         </div>
-      </div>
-      <EInput value={name} onChange={onName} placeholder="Team name" ariaLabel="Team name" />
-      {origin && <div className="mono" style={{ fontSize: 11, color: T.muted, margin: "2px 0 0 9px" }}>{origin}</div>}
-      <div className="eyebrow" style={{ margin: "12px 0 3px" }}>Members</div>
-      <NoteField value={rec.members} onChange={(v) => onChange({ members: v })}
-        placeholder={"One per line — name, program, email"} minRows={3} label="Members" />
-      {isRunning(rec) && !parseMembers(rec.members).length && (
-        <div style={{ fontSize: 12, color: T.warnInk, marginTop: 4 }}>{membersHint}</div>
-      )}
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 8, marginTop: 10 }}>
-        <div><div className="eyebrow" style={{ marginBottom: 3 }}>Department</div><EInput value={rec.dept} onChange={(v) => onChange({ dept: v })} placeholder="e.g. MIE" ariaLabel="Department" /></div>
-        <div><div className="eyebrow" style={{ marginBottom: 3 }}>Supervisor</div><EInput value={rec.supervisor} onChange={(v) => onChange({ supervisor: v })} placeholder="Professor" ariaLabel="Supervisor" /></div>
-        <div><div className="eyebrow" style={{ marginBottom: 3 }}>Mentor</div><EInput value={rec.mentor} onChange={(v) => onChange({ mentor: v })} placeholder="Assigned mentor" ariaLabel="Mentor" /></div>
-        <div>
-          <div className="eyebrow" style={{ marginBottom: 3 }}>Status</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          {groupControl}
           <select value={st.id} aria-label="Team status" onChange={(e) => onChange({ status: e.target.value })}
-            style={{ fontFamily: MONO, fontSize: 11.5, padding: "5px 7px", borderRadius: 8, background: T.surface, fontWeight: 600, maxWidth: "100%",
+            style={{ fontFamily: MONO, fontSize: 11.5, padding: "5px 7px", borderRadius: 8, background: T.surface, fontWeight: 600,
                      border: `1px solid ${st.fg}`, color: st.fg }}>
             {TEAM_STATUS.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
           </select>
-        </div>
-        <div>
-          <div className="eyebrow" style={{ marginBottom: 3 }}>Finance account</div>
-          <button className={"mini" + (rec.finance === "opened" ? " on" : "")}
+          <button className={"mini" + (rec.finance === "opened" ? " on" : "")} title="Financial Services account"
             style={rec.finance === "opened" ? { borderColor: T.ok, color: T.ok, background: T.surface } : {}}
             onClick={() => onChange({ finance: rec.finance === "opened" ? "pending" : "opened" })}>
-            {rec.finance === "opened" ? <><Check size={11} style={{ verticalAlign: -1 }} /> Opened</> : "Pending"}
+            {rec.finance === "opened" ? <><Check size={11} style={{ verticalAlign: -1 }} /> Account opened</> : "Account pending"}
           </button>
         </div>
       </div>
-      {funding}
-      <div style={{ marginTop: 14 }}>
-        <TeamDocs rec={rec} onChange={onChange} />
+      <div className="teamsum">
+        {running
+          ? (out.length
+            ? <Pill bg={worst.bg} fg={worst.fg}>{out.length} deliverable{out.length === 1 ? "" : "s"} · {worst.label.toLowerCase()}</Pill>
+            : <Pill bg={T.okTint} fg={T.ok}><Check size={12} /> Nothing owed</Pill>)
+          : <Pill bg={st.bg} fg={st.fg}>{st.label}</Pill>}
+        {running && <Pill bg={cin.stale ? T.warnTint : T.surface} fg={cin.stale ? T.warnInk : T.muted}>Last check-in · {cin.label.toLowerCase()}</Pill>}
+        <Pill bg={ds.missing.length ? T.warnTint : T.surface} fg={ds.missing.length ? T.warnInk : T.muted}>Documents · {ds.onFile}/{ds.total}</Pill>
+        {followups > 0 && <Pill bg={T.warnTint} fg={T.warnInk}>{followups} to follow up</Pill>}
       </div>
-      <div className="eyebrow" style={{ margin: "14px 0 3px" }}>Notes</div>
-      <NoteField value={rec[notesKey]} onChange={(v) => onChange({ [notesKey]: v })} label="Notes"
-        placeholder="Anything worth remembering — context, risks, decisions, who said what. Grows as you type." minRows={5} />
     </div>
+  );
+}
+
+/** A titled card; every section of a team page is one. */
+function Section({ title, right, children }) {
+  return (
+    <div className="card">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+        <div className="eyebrow">{title}</div>
+        {right}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** Who is on the team and who supports it. */
+function PeopleCard({ rec, onChange, membersHint }) {
+  const n = parseMembers(rec.members).length;
+  return (
+    <Section title={`People · ${n} member${n === 1 ? "" : "s"}`}>
+      <NoteField value={rec.members} onChange={(v) => onChange({ members: v })}
+        placeholder={"One per line — name, program, email"} minRows={3} label="Members" />
+      {isRunning(rec) && !n && <div style={{ fontSize: 12, color: T.warnInk, marginTop: 4 }}>{membersHint}</div>}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 8, marginTop: 10 }} className="peoplegrid">
+        <div><div className="eyebrow" style={{ marginBottom: 3 }}>Department</div><EInput value={rec.dept} onChange={(v) => onChange({ dept: v })} placeholder="e.g. MIE" ariaLabel="Department" /></div>
+        <div><div className="eyebrow" style={{ marginBottom: 3 }}>Supervisor</div><EInput value={rec.supervisor} onChange={(v) => onChange({ supervisor: v })} placeholder="Professor" ariaLabel="Supervisor" /></div>
+        <div><div className="eyebrow" style={{ marginBottom: 3 }}>Mentor</div><EInput value={rec.mentor} onChange={(v) => onChange({ mentor: v })} placeholder="Assigned mentor" ariaLabel="Mentor" /></div>
+      </div>
+    </Section>
   );
 }
 
@@ -4008,7 +4168,7 @@ function FundingBlock({ grantedLabel, granted, grantedInput, usedLabel, used, us
   const left = Math.max(granted - used, 0);
   const pct = granted ? Math.min(Math.round((used / granted) * 100), 100) : 0;
   return (
-    <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${T.hairline}` }}>
+    <Section title="Funding">
       <div style={{ display: "flex", gap: 18, flexWrap: "wrap", alignItems: "flex-end" }}>
         <div><div className="eyebrow" style={{ marginBottom: 3 }}>{grantedLabel}</div>{grantedInput}</div>
         <div><div className="eyebrow" style={{ marginBottom: 3 }}>{usedLabel}</div>{usedInput}</div>
@@ -4025,7 +4185,7 @@ function FundingBlock({ grantedLabel, granted, grantedInput, usedLabel, used, us
           : left > 0 ? `$${left.toLocaleString()} of $${granted.toLocaleString()} remaining · ` : "All of it · ")}
         {footnote}
       </div>
-    </div>
+    </Section>
   );
 }
 
@@ -4163,11 +4323,12 @@ function DeliverablesTab({ teams, summary, scopeNote, elsewhere, onSubmit, onOpe
   const running = teams.filter(isRunning);
   return (
     <>
-      <div className="grid resp" style={{ gridTemplateColumns: "repeat(3,1fr)", marginTop: 16, gap: 12 }}>
-        <Stat n={summary.overdue} l="Overdue or due today" accent={summary.overdue ? T.danger : "var(--accent)"} />
-        <Stat n={summary.soon} l={`Due within ${SOON_DAYS} days`} accent={summary.soon ? T.warnInk : "var(--accent)"} />
-        <Stat n={summary.teamsOwing} l="Teams that owe us something" accent="var(--accent)" />
-      </div>
+      <Figures items={[
+        { n: summary.overdue, l: "Overdue or due today", tone: summary.overdue ? T.danger : undefined },
+        { n: summary.soon, l: `Due within ${SOON_DAYS} days`, tone: summary.soon ? T.warnInk : undefined },
+        { n: summary.outstanding, l: "Outstanding in all" },
+        { n: summary.teamsOwing, l: "Teams that owe us something" },
+      ]} />
 
       <div className="card" style={{ marginTop: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 4 }}>
@@ -4316,6 +4477,105 @@ function ContactsTab({ rows, groupLabel, showCycle, tools, emptyText, onPrint })
           </div>
         </div>
       )}
+    </>
+  );
+}
+
+/** Laura's tracker: one row per team, one column per thing we are waiting on.
+    Like attendance, but for the team rather than each student. */
+function TrackerTab({ teams, items, setItems, onSet, onOpen, scopeNote }) {
+  const [editing, setEditing] = useState(false);
+  const [onlyFollow, setOnlyFollow] = useState(false);
+  const rows = teams.filter(isRunning).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  const sum = trackerSummary(teams, items);
+  const shown = onlyFollow ? rows.filter((t) => items.some((it) => trackStatus(t, it.id).id === "followup")) : rows;
+  const hidden = teams.length - rows.length;
+  const rmItem = async (it) => {
+    const used = rows.filter((t) => trackStatus(t, it.id).id !== "notdone").length;
+    if (used && !(await ui.confirm(`${used} team${used === 1 ? " has" : "s have"} a status recorded for it.`,
+      { title: `Stop tracking “${it.label || "this item"}”?`, confirmLabel: "Remove", danger: true }))) return;
+    setItems((xs) => xs.filter((x) => x.id !== it.id));
+  };
+  return (
+    <>
+      <Figures items={[
+        { n: sum.followup, l: `Need follow-up · ${sum.teamsFollowup} team${sum.teamsFollowup === 1 ? "" : "s"}`, tone: sum.followup ? T.warnInk : undefined },
+        { n: sum.scheduled, l: "Scheduled", tone: sum.scheduled ? T.info : undefined },
+        { n: `${sum.done}/${sum.total}`, l: "Done", tone: sum.total && sum.done === sum.total ? T.ok : undefined },
+        { n: sum.teams, l: `Running teams${scopeNote ? ` in ${scopeNote}` : ""}` },
+      ]} />
+
+      <div className="card" style={{ marginTop: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+          <div className="eyebrow">Tracker · {items.length} item{items.length === 1 ? "" : "s"} per team</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button className={"mini" + (onlyFollow ? " on" : "")} onClick={() => setOnlyFollow((v) => !v)} aria-pressed={onlyFollow}>
+              {onlyFollow ? <><Check size={11} style={{ verticalAlign: -1, marginRight: 3 }} />Needs follow-up only</> : "Show needs follow-up only"}
+            </button>
+            <button className={"mini" + (editing ? " on" : "")} onClick={() => setEditing((v) => !v)} aria-pressed={editing}>
+              <Pencil size={11} style={{ verticalAlign: -1, marginRight: 4 }} />{editing ? "Done editing" : "Edit items"}
+            </button>
+          </div>
+        </div>
+
+        {editing && (
+          <div style={{ background: T.paper, borderRadius: 12, padding: 12, marginBottom: 12 }}>
+            <div style={{ fontSize: 12.5, color: T.muted, marginBottom: 8 }}>What to track for every team — a document to submit, a meeting to book. Applies to all teams in this phase.</div>
+            {items.map((it) => (
+              <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <EInput value={it.label} onChange={(v) => setItems((xs) => xs.map((x) => (x.id === it.id ? { ...x, label: v } : x)))}
+                    placeholder="e.g. Budget submitted" ariaLabel="Tracker item" />
+                </span>
+                <IconBtn title={`Remove ${it.label || "item"}`} onClick={() => rmItem(it)}><Trash2 size={13} /></IconBtn>
+              </div>
+            ))}
+            <button className="mini" onClick={() => setItems((xs) => [...xs, { id: uid(), label: "" }])}><Plus size={11} style={{ verticalAlign: -1 }} /> Item</button>
+          </div>
+        )}
+
+        {!items.length ? (
+          <div className="empty">Nothing to track yet. Use “Edit items” to add what you're waiting on from each team.</div>
+        ) : !rows.length ? (
+          <div className="empty">No running teams{scopeNote ? ` in ${scopeNote}` : ""} yet.</div>
+        ) : !shown.length ? (
+          <div className="empty"><CheckCircle2 size={20} style={{ color: T.ok, display: "block", margin: "0 auto 6px" }} />No team needs a follow-up.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table className="tracktable">
+              <thead><tr>
+                <th scope="col">Team</th>
+                {items.map((it) => <th scope="col" key={it.id}>{it.label || "Untitled"}</th>)}
+                <th scope="col">Done</th>
+              </tr></thead>
+              <tbody>
+                {shown.map((t) => {
+                  const done = items.filter((it) => trackStatus(t, it.id).id === "done").length;
+                  return (
+                    <tr key={t.id}>
+                      <th scope="row"><button className="tlink" onClick={() => onOpen(t.id)} title="Open this team">{t.name || "Untitled"}</button></th>
+                      {items.map((it) => {
+                        const st = trackStatus(t, it.id);
+                        return (
+                          <td key={it.id}>
+                            <select className="tracksel" value={st.id} aria-label={`${it.label || "Item"} — ${t.name || "team"}`}
+                              onChange={(e) => onSet(t.id, it.id, e.target.value)}
+                              style={{ color: st.fg, background: st.bg, borderColor: st.id === "notdone" ? T.hairline : st.fg }}>
+                              {TRACK_STATUS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+                            </select>
+                          </td>
+                        );
+                      })}
+                      <td className="mono" style={{ fontSize: 12, color: done === items.length ? T.ok : T.muted, whiteSpace: "nowrap" }}>{done}/{items.length}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {hidden > 0 && <div style={{ fontSize: 11.5, color: T.muted, marginTop: 10 }}>{hidden} completed or withdrawn team{hidden === 1 ? " isn't" : "s aren't"} listed.</div>}
+      </div>
     </>
   );
 }

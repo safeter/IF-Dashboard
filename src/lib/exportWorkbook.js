@@ -1,6 +1,6 @@
 import {
   callFor, totalScore, judgeScores, judgesIn, deliverableState, statusOf, isRunning, isFunded,
-  isOutstanding, parseMembers, REQUIRED_DOCS, lastCheckin,
+  isOutstanding, parseMembers, REQUIRED_DOCS, lastCheckin, trackStatus,
 } from "./model";
 import { safeUrl } from "./ui";
 
@@ -119,6 +119,14 @@ export function buildWorkbook(XLSX, d) {
         x.status === "submitted" ? "Submitted" : deliverableState(x).label, txt(x.note),
       ]))), "Deliverables");
 
+  /* ---- Team tracker, both phases: one row per team and item ---- */
+  const trackRows = (phase, list, items, nameOf) => list.filter(isRunning).flatMap((p) =>
+    (items || []).map((it) => [phase, nameOf(p), txt(it.label), trackStatus(p, it.id).label]));
+  XLSX.utils.book_append_sheet(wb, sheet(XLSX, ["Phase", "Team", "Item", "Status"], [
+    ...trackRows("Phase I", profiles, d.trackerItems, (p) => txt(p.name)),
+    ...trackRows("Phase II", phase2, d.p2TrackerItems, p2Name),
+  ]), "Tracker");
+
   /* ---- Check-ins, both phases ---- */
   XLSX.utils.book_append_sheet(wb, sheet(XLSX, ["Phase", "Team", "Date", "Notes"], [
     ...profiles.flatMap((p) => (p.meetings || []).map((m) => ["Phase I", txt(p.name), txt(m.date), txt(m.note)])),
@@ -142,7 +150,7 @@ export function buildWorkbook(XLSX, d) {
   /* ---- Programming ---- */
   XLSX.utils.book_append_sheet(wb, sheet(XLSX, ["Date", "Time", "Place", "Session", "Speaker", "Held", "Room requested", "Room confirmed"],
     sessions.map((s) => [txt(s.date), txt(s.time), txt(s.place), txt(s.title), txt(s.who),
-      s.done ? "Yes" : "No", s.roomRequested ? "Yes" : "No", s.roomConfirmed ? "Yes" : "No"])), "Programming");
+      s.done ? "Yes" : "No", s.roomRequested ? "Yes" : "No", s.roomConfirmed ? "Yes" : "No"])), "Events");
 
   /* ---- Phase II ---- */
   XLSX.utils.book_append_sheet(wb, sheet(XLSX,
