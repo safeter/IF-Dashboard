@@ -91,6 +91,9 @@ export const isFunded = (p) => statusOf(p).id !== "withdrawn";
    ============================================================ */
 export const CHECKIN_DAYS = 35;
 
+/** Money paid to a team so far: the total of its payments ledger, never typed. */
+export const givenOf = (rec) => ((rec && rec.payments) || []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+
 /** The most recent check-in on or before today, and how long ago it was. */
 export function lastCheckin(rec) {
   const past = ((rec && rec.meetings) || [])

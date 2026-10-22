@@ -1,6 +1,6 @@
 import {
   callFor, totalScore, judgeScores, judgesIn, deliverableState, statusOf, isRunning, isFunded,
-  isOutstanding, parseMembers, REQUIRED_DOCS, lastCheckin, trackStatus,
+  isOutstanding, parseMembers, REQUIRED_DOCS, lastCheckin, trackStatus, givenOf,
 } from "./model";
 import { safeUrl } from "./ui";
 
@@ -16,6 +16,14 @@ const OUTCOME = { select: "Selected", waitlist: "Waitlist", reject: "Not selecte
 const AGREED = { yes: "Agreed", declined: "Declined", pending: "Pending" };
 const ATTEND = { present: "Present", absent: "Absent", excused: "Excused" };
 
+/* Award → given → spent, the same columns for both phases. */
+const MONEY_HEAD = ["Award ($)", "Given ($)", "Still to give ($)", "Spent ($)", "Unspent ($)"];
+const moneyCells = (awardValue, rec) => {
+  const award = Number(awardValue) || 0;
+  const given = ((rec && rec.payments) || []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const spent = Number(rec && rec.spent) || 0;
+  return [awardValue === "" || awardValue == null ? null : award, given, Math.max(award - given, 0), spent, given - spent];
+};
 const num = (v) => (v === "" || v == null || Number.isNaN(Number(v)) ? null : Number(v));
 const txt = (v) => (v == null ? "" : String(v));
 const docCell = (rec, key) => {
@@ -54,12 +62,13 @@ export function buildWorkbook(XLSX, d) {
   const phase2 = d.phase2 || [];
   const p2Name = (p) => txt(p.team);
   const checkin = (p) => (isRunning(p) ? lastCheckin(p).last || "none yet" : "");
-  const paid = (p) => (p.payments || []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const paid = givenOf;
 
   /* ---- Summary ---- */
   const outstanding = running.flatMap((p) => (p.deliverables || []).filter(isOutstanding));
   const overdue = outstanding.filter((x) => ["overdue", "today"].includes(deliverableState(x).key));
   const seedAllocated = funded.reduce((s, p) => s + (Number(p.budget) || 0), 0);
+  const seedGiven = funded.reduce((s, p) => s + paid(p), 0);
   const seedSpent = funded.reduce((s, p) => s + (Number(p.spent) || 0), 0);
   const activeP2 = phase2.filter(isRunning);
   const p2Out = activeP2.flatMap((p) => (p.deliverables || []).filter(isOutstanding));
@@ -80,10 +89,12 @@ export function buildWorkbook(XLSX, d) {
     ["Phase II deliverables outstanding", p2Out.length],
     ["Phase II deliverables overdue or due today", p2Late.length],
     ["Running teams without a check-in in 5+ weeks", quiet],
-    ["Phase I seed budgets allocated ($)", seedAllocated],
-    ["Phase I seed budgets spent ($)", seedSpent],
+    ["Phase I awards ($)", seedAllocated],
+    ["Phase I given to teams ($)", seedGiven],
+    ["Phase I spent by teams ($)", seedSpent],
     ["Phase II awards, running teams ($)", activeP2.reduce((s, p) => s + (Number(p.awarded) || 0), 0)],
-    ["Phase II paid out, running teams ($)", activeP2.reduce((s, p) => s + paid(p), 0)],
+    ["Phase II given, running teams ($)", activeP2.reduce((s, p) => s + paid(p), 0)],
+    ["Phase II spent, running teams ($)", activeP2.reduce((s, p) => s + (Number(p.spent) || 0), 0)],
   ];
   XLSX.utils.book_append_sheet(wb, sheet(XLSX, ["Measure", "Value"], summary), "Summary");
 
@@ -99,13 +110,12 @@ export function buildWorkbook(XLSX, d) {
   /* ---- Phase I teams ---- */
   XLSX.utils.book_append_sheet(wb, sheet(XLSX,
     ["Team", "Call", "Status", "Members", "Department", "Supervisor", "Mentor", "Finance account",
-     "Budget ($)", "Spent ($)", "Remaining ($)", ...REQUIRED_DOCS.map((r) => r.label), "Deliverables outstanding", "Last check-in", "Notes"],
+     ...MONEY_HEAD, ...REQUIRED_DOCS.map((r) => r.label), "Deliverables outstanding", "Last check-in", "Notes"],
     profiles.map((p) => {
-      const b = num(p.budget), s = num(p.spent);
       return [
         txt(p.name), callName(p), statusOf(p).label, parseMembers(p.members).length,
         txt(p.dept), txt(p.supervisor), txt(p.mentor), p.finance === "opened" ? "Opened" : "Pending",
-        b, s, b == null ? null : b - (s || 0), ...REQUIRED_DOCS.map((r) => docCell(p, r.key)),
+        ...moneyCells(p.budget, p), ...REQUIRED_DOCS.map((r) => docCell(p, r.key)),
         isRunning(p) ? (p.deliverables || []).filter(isOutstanding).length : 0, checkin(p), txt(p.notes),
       ];
     })), "Phase I teams");
@@ -155,17 +165,18 @@ export function buildWorkbook(XLSX, d) {
   /* ---- Phase II ---- */
   XLSX.utils.book_append_sheet(wb, sheet(XLSX,
     ["Team", "Cohort", "Status", "Members", "Department", "Supervisor", "Mentor", "Finance account",
-     "Award ($/yr)", "Paid out ($)", "Remaining ($)", "Over award ($)", ...REQUIRED_DOCS.map((r) => r.label),
+     ...MONEY_HEAD, ...REQUIRED_DOCS.map((r) => r.label),
      "Deliverables outstanding", "Last check-in", "Notes"],
     phase2.map((p) => {
-      const a = Number(p.awarded) || 0, pd = paid(p);
       return [p2Name(p), txt(p.cohort), statusOf(p).label, parseMembers(p.members).length,
         txt(p.dept), txt(p.supervisor), txt(p.mentor), p.finance === "opened" ? "Opened" : "Pending",
-        num(p.awarded), pd, Math.max(a - pd, 0), Math.max(pd - a, 0), ...REQUIRED_DOCS.map((r) => docCell(p, r.key)),
+        ...moneyCells(p.awarded, p), ...REQUIRED_DOCS.map((r) => docCell(p, r.key)),
         isRunning(p) ? (p.deliverables || []).filter(isOutstanding).length : 0, checkin(p), txt(p.note)];
     })), "Phase II teams");
-  XLSX.utils.book_append_sheet(wb, sheet(XLSX, ["Team", "Date", "Amount ($)", "Note"],
-    phase2.flatMap((p) => (p.payments || []).map((x) => [txt(p.team), txt(x.date), num(x.amount), txt(x.note)]))), "Phase II payments");
+  XLSX.utils.book_append_sheet(wb, sheet(XLSX, ["Phase", "Team", "Date", "Amount ($)", "Note"], [
+    ...profiles.flatMap((p) => (p.payments || []).map((x) => ["Phase I", txt(p.name), txt(x.date), num(x.amount), txt(x.note)])),
+    ...phase2.flatMap((p) => (p.payments || []).map((x) => ["Phase II", p2Name(p), txt(x.date), num(x.amount), txt(x.note)])),
+  ]), "Payments");
 
   /* ---- Demo Day ---- */
   XLSX.utils.book_append_sheet(wb, sheet(XLSX,

@@ -82,7 +82,7 @@ Deleting a call never deletes teams: they move to an **Unassigned** group until 
 
 ## Exporting to Excel
 
-**Export to Excel** (on the dashboard, and **Excel** in the sidebar or phone menu) downloads the cycle you're viewing as one workbook, one sheet each: Summary, Selection, Phase I teams, Tracker, Deliverables and Check-ins (both phases), Contacts (both phases), Attendance, Events, Phase II teams and payments, Demo Day, Class visits and Pizza Q&As. It's for reporting, not for restoring — use **Backup** for that. Every cell is plain text or a number, never a formula.
+**Export to Excel** (on the dashboard, and **Excel** in the sidebar or phone menu) downloads the cycle you're viewing as one workbook, one sheet each: Summary, Selection, Phase I teams, Tracker, Deliverables and Check-ins (both phases), Contacts (both phases), Attendance, Events, Phase II teams, Payments (both phases), Demo Day, Class visits and Pizza Q&As. It's for reporting, not for restoring — use **Backup** for that. Every cell is plain text or a number, never a formula.
 
 ## Tracking what teams owe you
 
