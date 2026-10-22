@@ -12,12 +12,20 @@ import { buildWorkbook, workbookName } from "./lib/exportWorkbook";
    request drops the stat figures, the wheel and every table header into the
    browser default — Times New Roman. */
 const MONO = "'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+/* White or ink, whichever reads on a colour someone picked (e.g. the gold of Homecoming). */
+const inkOn = (hex) => {
+  const m = /^#?([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(String(hex || ""));
+  if (!m) return "#fff";
+  const [r, g, b] = m.slice(1).map((h) => { const x = parseInt(h, 16) / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; });
+  const L = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return (1.05 / (L + 0.05)) >= 4.5 ? "#fff" : T.ink;
+};
 const DISP = "'Schibsted Grotesk', Inter, system-ui, -apple-system, 'Segoe UI', sans-serif";
 import { ui, DialogHost, NoteField, DateField, todayISO, fmtDate, safeUrl, linkHost } from "./lib/ui";
 import {
   callFor, callGroups, matchCall, legacyCallId, UNASSIGNED,
   deliverableState, isOutstanding, deliverableSummary, profileDeliverableState, SOON_DAYS,
-  parseMembers, TEAM_STATUS, statusOf, isRunning, rosterGaps,
+  parseMembers, TEAM_STATUS, statusOf, isRunning, isFunded, rosterGaps, lastCheckin, CHECKIN_DAYS,
   JUDGE_MAX, judgeScores, hasBreakdown, totalScore, judgesIn,
   REQUIRED_DOCS, docsSummary,
 } from "./lib/model";
@@ -66,6 +74,12 @@ const STYLE = `
   padding:12px 34px;border-bottom:1px solid ${T.hairline};background:${T.paper};
   position:sticky;top:0;z-index:5;min-height:52px}
 .content{padding:30px 34px 60px;max-width:1160px;width:100%}
+.pagehead{display:flex;justify-content:space-between;align-items:flex-end;gap:12px 20px;flex-wrap:wrap}
+.pageactions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.tabrow{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;
+  margin-top:18px;padding-bottom:14px;border-bottom:1px solid ${T.hairline}}
+.btn.sm{font-size:12px;padding:6px 12px}
+@media(max-width:1000px){.gcs .grid.resp4{grid-template-columns:repeat(2,minmax(0,1fr)) !important}}
 
 /* primitives */
 .card{background:${T.surface};border:1px solid ${T.hairline};border-radius:18px;padding:20px}
@@ -81,6 +95,8 @@ const STYLE = `
 .btn.ghost:hover{background:${T.paper};filter:none}
 .stat .n{font-family:'Schibsted Grotesk', Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;font-size:38px;font-weight:800;letter-spacing:-.03em;line-height:1}
 .stat .l{font-size:12.5px;color:${T.muted};margin-top:7px}
+/* Four figures share a phone's width two by two; dollar amounts must fit. */
+@media(max-width:600px){.resp4 .stat .n{font-size:26px}.resp4 .stat{padding:16px}}
 table{width:100%;border-collapse:collapse}
 /* Tables whose cells are all full-width inputs: size the columns explicitly. */
 .fixedtable{table-layout:fixed;min-width:760px}
@@ -186,10 +202,13 @@ tr:last-child td{border-bottom:none}
   background:${T.surface};min-width:0}
 .calcell .mo{font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:10px;color:${T.muted};text-transform:uppercase;letter-spacing:.06em}
 .calcell.cur{background:${T.paper};border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
-.evt{font-size:10px;font-weight:700;margin-top:5px;padding:3px 4px;border-radius:6px;line-height:1.2;color:#fff;
-  overflow-wrap:anywhere;hyphens:auto}
+/* A date label stays whole on one line and trims with an ellipsis; the full
+   name is in its tooltip. Breaking mid-word ("Homecomin g") read as a bug. */
+.evt{display:block;width:100%;text-align:left;font-size:10px;font-weight:700;margin-top:5px;padding:3px 5px;border-radius:6px;
+  line-height:1.3;min-height:24px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.search input{min-height:28px}
 .search{display:flex;align-items:center;gap:8px;border:1px solid ${T.hairline};border-radius:11px;
-  padding:9px 12px;background:${T.surface};max-width:340px}
+  padding:4px 12px;background:${T.surface};max-width:340px}
 .search input{border:none;outline:none;font-family:inherit;font-size:13px;width:100%;background:transparent;color:${T.ink}}
 .scards{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:13px}
 .award{font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;color:#fff}
@@ -843,13 +862,13 @@ const KB_SEED = [
   { id: "kb-r2", category: "rules", draft: false, title: "Who can apply",
     body: "Student-led projects from the Gina Cody School of Engineering and Computer Science. Each year there are two parallel calls: the Regular call, open to all GCS student projects, and a themed Special call (the topic changes each cycle)." },
   { id: "kb-r3", category: "rules", draft: false, title: "The two phases",
-    body: "Phase 1 — Seed program: the cohort year, September to March. Technology and market development, expert mentorship, the presentation series, monthly check-ins, and preparation for Demo Day.\n\nPhase 2 — Maturation: awarded after the Demo Day pitch to a panel of expert judges. Selected projects receive up to $50,000 per year to build a prototype, find product–market fit, and secure initial clients and funding.\n\nImportant vocabulary: being Selected at the June–July selection admits a team into the cohort. Funding is decided later, at Demo Day." },
+    body: "Phase I — Seed program: the cohort year, September to March. Technology and market development, expert mentorship, the presentation series, monthly check-ins, and preparation for Demo Day.\n\nPhase II — Maturation: awarded after the Demo Day pitch to a panel of expert judges. Selected projects receive up to $50,000 per year to build a prototype, find product–market fit, and secure initial clients and funding.\n\nImportant vocabulary: being Selected at the June–July selection admits a team into the cohort. Funding is decided later, at Demo Day." },
   { id: "kb-r4", category: "rules", draft: false, title: "Eligible expenses",
     body: "Financial Services opens an account per funded project. Eligible categories: hiring individuals, materials & supplies, small equipment, software, and procurement of goods/services. (Not exhaustive — confirm specifics with Financial Services.)" },
   { id: "kb-r5", category: "rules", draft: false, title: "The annual calendar",
-    body: "February–March: promo season (class visits, Pizza Q&As).\nMarch: Regular + Special calls open.\nEarly May: calls close.\nJune–July: selection — evaluation (6 judges scoring /5, total /30), interviews, decisions.\nAugust: onboarding.\nSeptember: kickoff.\nOctober: Homecoming.\nEnd of March: Demo Day, followed by Phase 2 funding decisions." },
+    body: "February–March: promo season (class visits, Pizza Q&As).\nMarch: Regular + Special calls open.\nEarly May: calls close.\nJune–July: selection — evaluation (6 judges scoring /5, total /30), interviews, decisions.\nAugust: onboarding.\nSeptember: kickoff.\nOctober: Homecoming.\nEnd of March: Demo Day, followed by Phase II funding decisions." },
   { id: "kb-f1", category: "faq", draft: false, title: "How much funding can a team receive?",
-    body: "Up to $50,000 per year, in Phase 2, awarded after the Demo Day pitch. The Seed year itself centers on mentorship, programming, and development support." },
+    body: "Up to $50,000 per year, in Phase II, awarded after the Demo Day pitch. The Seed year itself centers on mentorship, programming, and development support." },
   { id: "kb-f2", category: "faq", draft: false, title: "When are applications due?",
     body: "Calls open in March and close in early May. Exact dates are set per cycle — check the current calls on the dashboard or the program page." },
   { id: "kb-f3", category: "faq", draft: true, title: "Can a team apply to both the Regular and Special calls?",
@@ -926,7 +945,6 @@ export default function App() {
   const [profileCallFilter, setProfileCallFilter] = useState("all"); // Teams: which call's teams to show
   const [archive, setArchive] = useState(null);          // Contacts: past cycles' profiles, loaded on demand
   const [archiveBusy, setArchiveBusy] = useState(false);
-  const [copiedAll, setCopiedAll] = useState(false);
   const [alumni, setAlumni] = useCloudSection("alumni", SEED_ALUMNI, "global");
   const [selTab, setSelTab] = useState("list");
   const [dragId, setDragId] = useState(null);
@@ -943,6 +961,8 @@ export default function App() {
   const [kb, setKb] = useCloudSection("kb", KB_SEED, "global");
   const [phase2, setPhase2] = useCloudSection("phase2Teams", PHASE2_SEED, "global");
   const [activeP2Id, setActiveP2Id] = useState(null);
+  const [p2Tab, setP2Tab] = useState("profiles");           // Phase II: profiles | deliverables | contacts
+  const [p2CohortFilter, setP2CohortFilter] = useState("all");
   const [kbTab, setKbTab] = useState("rules");
   const [kbQuery, setKbQuery] = useState("");
   const [copiedId, setCopiedId] = useState(null);
@@ -1267,7 +1287,7 @@ export default function App() {
   const rmProfile = async (id) => {
     const p = profiles.find((x) => x.id === id);
     if (!p) return;
-    if (!(await ui.confirm("Meetings and deliverables go with it.",
+    if (!(await ui.confirm("Check-ins and deliverables go with it.",
       { title: `Remove the profile for "${p.name || "this team"}"?`, confirmLabel: "Remove", danger: true }))) return;
     setProfiles((ps) => ps.filter((x) => x.id !== id));
     if (activeProfileId === id) setActiveProfileId(null);
@@ -1278,6 +1298,13 @@ export default function App() {
     updProfile(pid, { [key]: [...(profiles.find((p) => p.id === pid)?.[key] || []), { id: uid(), ...blank }] });
   const rmSub = (pid, key, subId) =>
     updProfile(pid, { [key]: (profiles.find((p) => p.id === pid)?.[key] || []).filter((x) => x.id !== subId) });
+  /* The same deliverable for many teams at once — most are cohort-wide. */
+  const withDeliverable = (rec, title, due) =>
+    ({ ...rec, deliverables: [...(rec.deliverables || []), { id: uid(), title, due, status: "pending", note: "" }] });
+  const assignP1 = (title, due, ids) => {
+    setProfiles((ps) => ps.map((p) => (ids.includes(p.id) ? withDeliverable(p, title, due) : p)));
+    ui.toast(`“${title}” added to ${ids.length} team${ids.length === 1 ? "" : "s"}.`);
+  };
 
   /* ---- knowledge base ---- */
   const updKb = (id, patch) => setKb((ks) => ks.map((k) => (k.id === id ? { ...k, ...patch } : k)));
@@ -1323,7 +1350,7 @@ export default function App() {
       const src = teams.find((t) => t.id === r.teamId || t.name === r.team);
       const note = [
         (r.note || "").trim() || null,
-        r.phase2 && Number(r.amount) > 0 ? `$${Number(r.amount).toLocaleString()}/yr Phase 2` : null,
+        r.phase2 && Number(r.amount) > 0 ? `$${Number(r.amount).toLocaleString()}/yr Phase II` : null,
       ].filter(Boolean).join(" — ");
       return { rid: uid(), name: r.team, blurb: src ? src.blurb : "", awards: r.awards, phase2: !!r.phase2, note };
     });
@@ -1344,20 +1371,36 @@ export default function App() {
     }
   };
 
-  /* ---- phase 2: funded-team tracking (payments + meetings) ---- */
-  const activeP2 = phase2.find((p) => p.id === activeP2Id) || phase2[0] || null;
+  /* ---- Phase II: funded teams, across every cohort ----
+     Stored as `team` (name) and `note`, the shape it has always had; read
+     through `name` so the pieces shared with Phase I work unchanged. */
+  const p2Teams = useMemo(() => phase2.map((p) => ({ ...p, name: p.team || "" })), [phase2]);
+  const p2CohortOf = (p) => String(p.cohort || "").trim() || "No cohort";
+  const p2Cohorts = [...new Set(p2Teams.map(p2CohortOf))]
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const p2Filter = p2Cohorts.includes(p2CohortFilter) ? p2CohortFilter : "all";
+  const visibleP2 = p2Filter === "all" ? p2Teams : p2Teams.filter((p) => p2CohortOf(p) === p2Filter);
+  const activeP2 = visibleP2.find((p) => p.id === activeP2Id) || visibleP2[0] || null;
   const p2Paid = (p) => (p.payments || []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const p2Owed = useMemo(() => deliverableSummary(p2Teams), [p2Teams]);
+  const shownP2Owed = useMemo(() => deliverableSummary(visibleP2), [visibleP2]);
   const updP2 = (id, patch) => setPhase2((ps) => ps.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  const blankP2 = (extra = {}) => ({
+    id: uid(), team: "", cohort: p2Filter !== "all" && p2Filter !== "No cohort" ? p2Filter : viewedCycle.label,
+    awarded: "", status: "active", note: "", members: "", dept: "", supervisor: "", mentor: "", finance: "pending",
+    payments: [], meetings: [], deliverables: [], docs: {}, links: [], ...extra,
+  });
   const addP2 = () => {
-    const p = { id: uid(), team: "", cohort: viewedCycle.label, awarded: "", status: "active", note: "", payments: [], meetings: [], docs: {}, links: [] };
+    const p = blankP2();
     setPhase2((ps) => [...ps, p]);
     setActiveP2Id(p.id);
+    setP2Tab("profiles");
   };
   const rmP2 = async (id) => {
     const p = phase2.find((x) => x.id === id);
     if (!p) return;
-    if (!(await ui.confirm("Payment and meeting records go with it.",
-      { title: `Remove ${p.team || "this team"} from Phase II tracking?`, confirmLabel: "Remove", danger: true }))) return;
+    if (!(await ui.confirm("Payments, deliverables and check-ins go with it.",
+      { title: `Remove ${p.team || "this team"} from Phase II?`, confirmLabel: "Remove", danger: true }))) return;
     setPhase2((ps) => ps.filter((x) => x.id !== id));
     if (activeP2Id === id) setActiveP2Id(null);
   };
@@ -1367,16 +1410,37 @@ export default function App() {
     updP2(pid, { [key]: [...(phase2.find((p) => p.id === pid)?.[key] || []), { id: uid(), ...blank }] });
   const rmP2Sub = (pid, key, subId) =>
     updP2(pid, { [key]: (phase2.find((p) => p.id === pid)?.[key] || []).filter((x) => x.id !== subId) });
+  const assignP2 = (title, due, ids) => {
+    setPhase2((ps) => ps.map((p) => (ids.includes(p.id) ? withDeliverable(p, title, due) : p)));
+    ui.toast(`“${title}” added to ${ids.length} team${ids.length === 1 ? "" : "s"}.`);
+  };
   const missingP2 = results.filter(
     (r) => r.phase2 && (r.team || "").trim() && !phase2.some((p) => p.team && p.team.toLowerCase() === r.team.toLowerCase())
   );
+  /* A team moving up keeps who it is: members, department, supervisor and
+     mentor come across from its Phase I profile, so nothing is retyped. */
   const pullP2FromResults = () => {
     if (!missingP2.length) return;
-    setPhase2((ps) => [...ps, ...missingP2.map((r) => ({
-      id: uid(), team: r.team, cohort: viewedCycle.label,
-      awarded: Number(r.amount) || "", status: "active", note: (r.note || ""), payments: [], meetings: [],
-    }))]);
+    const fromP1 = (r) => profiles.find((pr) => (r.teamId && pr.teamId === r.teamId)
+      || (pr.name || "").trim().toLowerCase() === r.team.trim().toLowerCase());
+    setPhase2((ps) => [...ps, ...missingP2.map((r) => {
+      const src = fromP1(r) || {};
+      return blankP2({
+        team: r.team, cohort: viewedCycle.label, awarded: Number(r.amount) || "", note: r.note || "",
+        members: src.members || "", dept: src.dept || "", supervisor: src.supervisor || "", mentor: src.mentor || "",
+        fromCycle: viewedCycle.label,
+      });
+    })]);
+    ui.toast(`${missingP2.length} team${missingP2.length === 1 ? "" : "s"} added to Phase II.`);
   };
+  const p2ContactRows = useMemo(() => {
+    const rows = [];
+    visibleP2.forEach((p) => parseMembers(p.members).forEach((m, i) => rows.push({
+      ...m, rowId: `p2:${p.id}:${i}`, team: p.name || "Untitled team",
+      group: { name: p2CohortOf(p), accent: T.burgundy }, cycleLabel: p2CohortOf(p), current: true,
+    })));
+    return rows.sort((a, b) => (a.team || "").localeCompare(b.team || "") || (a.name || "").localeCompare(b.name || ""));
+  }, [visibleP2]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const cycleRoad = (i) => {
     const order = ["notstarted", "progress", "ready"];
@@ -1413,7 +1477,7 @@ export default function App() {
   /* Every Phase I team has a place on the attendance list, even before
      anyone is listed for it, so a team can't silently drop off. */
   const rosterTeams = profiles
-    .map((p) => ({ id: p.id, name: p.name || "Untitled", withdrawn: !isRunning(p), people: roster.filter((r) => r.profileId === p.id) }))
+    .map((p) => ({ id: p.id, name: p.name || "Untitled", withdrawn: !isRunning(p), state: statusOf(p).label.toLowerCase(), people: roster.filter((r) => r.profileId === p.id) }))
     .filter((t) => t.people.length || !t.withdrawn)
     .sort((a, b) => a.name.localeCompare(b.name));
   const gaps = rosterGaps(profiles, missingProfiles);
@@ -1502,7 +1566,7 @@ export default function App() {
     // A team with nobody listed still gets lines, so its members can sign in by hand.
     const blank = `<tr><td>&nbsp;</td><td class="em"></td><td style="text-align:center"><span class="box"></span></td><td class="sig"></td></tr>`;
     const rows = rosterTeams.map((t) => {
-      const head = `<tr class="teamhead"><td colspan="4">${esc(t.name)}${t.withdrawn ? " · withdrawn" : ""}</td></tr>`;
+      const head = `<tr class="teamhead"><td colspan="4">${esc(t.name)}${t.withdrawn ? ` · ${t.state}` : ""}</td></tr>`;
       const people = t.people.length
         ? t.people.map((r) =>
           `<tr><td>${esc(r.name)}</td><td class="em">${esc(r.email)}</td><td style="text-align:center"><span class="box"></span></td><td class="sig"></td></tr>`
@@ -1526,7 +1590,7 @@ export default function App() {
     const mark = { present: "P", absent: "A", excused: "E" };
     const heads = sessions.map((s) => `<th style="font-size:9px">${esc(s.title.length > 22 ? s.title.slice(0, 20) + "…" : s.title)}<br/><span style="font-weight:normal;opacity:.8">${esc(s.date)}</span></th>`).join("");
     const rows = rosterTeams.map((t) => {
-      const head = `<tr class="teamhead"><td class="n" colspan="${sessions.length + 1}">${esc(t.name)}${t.withdrawn ? " · withdrawn" : ""}</td></tr>`;
+      const head = `<tr class="teamhead"><td class="n" colspan="${sessions.length + 1}">${esc(t.name)}${t.withdrawn ? ` · ${t.state}` : ""}</td></tr>`;
       if (!t.people.length) return head + `<tr><td class="n" colspan="${sessions.length + 1}" style="color:#999">No members listed</td></tr>`;
       const people = t.people.map((r) => {
         const cells = sessions.map((s) => `<td>${mark[attFor(s.sid)[r.key]] || ""}</td>`).join("");
@@ -1607,11 +1671,11 @@ export default function App() {
     const rows = [];
     profileRows.forEach((p) => parseMembers(p.members).forEach((m, i) => rows.push({
       ...m, rowId: `now:${p.id}:${i}`, team: p.name || "Untitled team",
-      call: callFor(p, callList), cycleLabel: viewedCycle.label, current: true,
+      call: callFor(p, callList), group: callFor(p, callList), cycleLabel: viewedCycle.label, current: true,
     })));
     (archive || []).forEach(({ profile, call, cycle }) => parseMembers(profile.members).forEach((m, i) => rows.push({
       ...m, rowId: `past:${cycle.id}:${profile.id}:${i}`, team: profile.name || "Untitled team",
-      call, cycleLabel: cycle.label, current: false,
+      call, group: call, cycleLabel: cycle.label, current: false,
       /* Usually every loaded cycle is a past one. It is only when a past
          cycle is being viewed that one of them is the live cycle instead,
          and saying so beats labelling the current cohort "past". */
@@ -1650,7 +1714,7 @@ export default function App() {
      field, so both read as zero. */
   const budgetOf = (p) => Number(p.budget) || 0;
   const spentOf = (p) => Number(p.spent) || 0;
-  const seedTotals = profiles.filter(isRunning).reduce(
+  const seedTotals = profiles.filter(isFunded).reduce(
     (a, p) => ({ allocated: a.allocated + budgetOf(p), spent: a.spent + spentOf(p) }),
     { allocated: 0, spent: 0 }
   );
@@ -1670,11 +1734,11 @@ export default function App() {
       ui.alert(`Couldn't build the Excel file: ${e.message}`);
     }
   };
-  const p2Totals = phase2.filter((p) => p.status !== "completed").reduce(
+  const p2Totals = phase2.filter(isRunning).reduce(
     (a, p) => ({ awarded: a.awarded + (Number(p.awarded) || 0), paid: a.paid + p2Paid(p) }),
     { awarded: 0, paid: 0 }
   );
-  const cohortBudget = visibleProfiles.filter(isRunning).reduce(
+  const cohortBudget = visibleProfiles.filter(isFunded).reduce(
     (a, p) => {
       const b = budgetOf(p), sp = spentOf(p);
       return { allocated: a.allocated + b, spent: a.spent + sp, withBudget: a.withBudget + (b > 0 ? 1 : 0), over: a.over + (b > 0 && sp > b ? 1 : 0) };
@@ -1687,22 +1751,9 @@ export default function App() {
     return hit ? (hit.call.id === UNASSIGNED ? "Unassigned" : hit.call.name) : "";
   })();
   const visibleContacts = contactRows.filter((r) => callMatches(r.call, profileCallFilter));
-  const contactEmails = [...new Set(visibleContacts.map((r) => r.email).filter(Boolean))];
-
-  const copyEmails = async () => {
-    if (!contactEmails.length) { await ui.alert("No email addresses in this view yet."); return; }
-    const list = contactEmails.join("; ");
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      await navigator.clipboard.writeText(list);
-      setCopiedAll(true);
-      setTimeout(() => setCopiedAll(false), 1800);
-    } else {
-      await ui.prompt("Copy these addresses", list, { title: `${contactEmails.length} addresses` });
-    }
-  };
-
-  const printContacts = async (rows) => {
+  const printContacts = async (rows, phase = "Phase I") => {
     if (!rows.length) { await ui.alert("No contacts to print."); return; }
+    const p1 = phase === "Phase I";
     /* Grouped by team within its cycle: two cycles can hold a team of the
        same name, and merging them would invent a roster that never existed. */
     const byTeam = new Map();
@@ -1716,16 +1767,18 @@ export default function App() {
     const body = [...byTeam.keys()].map((key) => {
       const people = byTeam.get(key);
       const first = people[0];
-      const head = `<tr class="teamhead"><td colspan="3">${esc(first.team)} — ${esc(first.call.name)} call · ${esc(first.cycleLabel)}${first.current ? "" : ` (${esc(first.note)})`}</td></tr>`;
+      const head = p1
+        ? `<tr class="teamhead"><td colspan="3">${esc(first.team)} — ${esc(first.group.name)} call · ${esc(first.cycleLabel)}${first.current ? "" : ` (${esc(first.note)})`}</td></tr>`
+        : `<tr class="teamhead"><td colspan="3">${esc(first.team)} — ${esc(first.group.name)}</td></tr>`;
       return head + people.map((r) =>
         `<tr><td>${esc(r.name)}</td><td class="em">${esc(r.email || "—")}</td><td class="team">${esc(r.cycleLabel)}</td></tr>`
       ).join("");
     }).join("");
     openPrint(
-      `<div class="head"><h1>Contact list</h1>
-       <div class="sub">GCS Student Innovation Fund · ${rows.length} contact${rows.length === 1 ? "" : "s"}${archive && archive.length ? " · includes other cycles" : ` · cycle ${esc(viewedCycle.label)}`}</div></div>
-       <table><thead><tr><th>Name</th><th>Email</th><th style="width:90px">Cycle</th></tr></thead><tbody>${body}</tbody></table>`,
-      `Contacts — ${viewedCycle.label}`
+      `<div class="head"><h1>${phase} contact list</h1>
+       <div class="sub">GCS Student Innovation Fund · ${rows.length} contact${rows.length === 1 ? "" : "s"}${!p1 ? " · all cohorts in view" : archive && archive.length ? " · includes other cycles" : ` · cycle ${esc(viewedCycle.label)}`}</div></div>
+       <table><thead><tr><th>Name</th><th>Email</th><th style="width:90px">${p1 ? "Cycle" : "Cohort"}</th></tr></thead><tbody>${body}</tbody></table>`,
+      `${phase} contacts${p1 ? ` — ${viewedCycle.label}` : ""}`
     );
   };
 
@@ -1858,8 +1911,8 @@ export default function App() {
     () => new Set((phase2 || []).map((p) => String(p.team || "").trim().toLowerCase()).filter(Boolean)),
     [phase2]
   );
-  const isFunded = (t) => fundedNames.has(String(t.name || "").trim().toLowerCase());
-  const inPhase2 = (t) => !!t.phase2 || isFunded(t);
+  const hasPhase2Award = (t) => fundedNames.has(String(t.name || "").trim().toLowerCase());
+  const inPhase2 = (t) => !!t.phase2 || hasPhase2Award(t);
   const [editTeam, setEditTeam] = useState(null);
   const [cohortMsg, setCohortMsg] = useState(null);
   /* Cohort teams are nested one level down, so they need their own stamp.
@@ -2018,7 +2071,7 @@ export default function App() {
     { id: "calls", label: "Calls & promo", Icon: Megaphone },
     { id: "selection", label: "Selection", Icon: ListChecks },
     { id: "teams", label: "Phase I teams", Icon: Users, badge: deliverables.outstanding, badgeTone: deliverables.overdue ? T.danger : T.warnInk },
-    { id: "phase2", label: "Phase II teams", Icon: Wallet },
+    { id: "phase2", label: "Phase II teams", Icon: Wallet, badge: p2Owed.outstanding, badgeTone: p2Owed.overdue ? T.danger : T.warnInk },
     { id: "planning", label: "Planning", Icon: CalendarCheck },
     { id: "programming", label: "Programming", Icon: CalendarDays },
     { id: "knowledge", label: "Knowledge", Icon: BookOpen },
@@ -2180,16 +2233,14 @@ export default function App() {
         <div className="content">
           {view === "dashboard" && (
             <>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12, flexWrap: "wrap" }}>
-                <div>
-                  <div className="h1 disp">The year at a glance</div>
-                  <div className="sub">One cohort cycle, two parallel calls. Right now: {(PHASE_BY_MONTH[CURRENT] || "").toLowerCase()}.</div>
-                </div>
-                <button className="btn ghost" onClick={exportExcel}
-                  title="Selection, both phases, deliverables, attendance, Demo Day and promotion — one sheet each">
-                  <FileSpreadsheet size={14} /> Export to Excel
-                </button>
-              </div>
+              <PageHead title="The year at a glance"
+                sub={`One cohort cycle, two parallel calls. Right now: ${(PHASE_BY_MONTH[CURRENT] || "").toLowerCase()}.`}
+                actions={
+                  <button className="btn ghost" onClick={exportExcel}
+                    title="Selection, both phases, deliverables, check-ins, attendance, Demo Day and promotion — one sheet each">
+                    <FileSpreadsheet size={14} /> Export to Excel
+                  </button>
+                } />
 
               <div className="grid resp" style={{ gridTemplateColumns: "1.1fr 1.4fr", marginTop: 22, alignItems: "stretch" }}>
                 <div className="card wheelcard" style={{ display: "flex", flexDirection: "column", justifyContent: "center" }}>
@@ -2236,8 +2287,8 @@ export default function App() {
                         {[
                           { key: "p1", label: "Phase I seed budgets", scope: `cycle ${viewedCycle.label}`,
                             used: seedTotals.spent, total: seedTotals.allocated, verb: "spent", go: "teams" },
-                          { key: "p2", label: "Phase II awards", scope: "active teams",
-                            used: p2Totals.paid, total: p2Totals.awarded, verb: "disbursed", go: "phase2" },
+                          { key: "p2", label: "Phase II awards", scope: "running teams",
+                            used: p2Totals.paid, total: p2Totals.awarded, verb: "paid out", go: "phase2" },
                         ].filter((r) => r.total > 0 || r.used > 0).map((r, i, arr) => {
                           const over = r.used > r.total;
                           const pct = r.total ? Math.min(Math.round((r.used / r.total) * 100), 100) : 0;
@@ -2270,16 +2321,42 @@ export default function App() {
               <div className="card" style={{ marginTop: 16 }}>
                 <div className="eyebrow" style={{ marginBottom: 12 }}>Needs attention</div>
                 <Alert icon={<Clock size={15} />} text={noDate ? `${noDate} shortlisted team${noDate === 1 ? " has" : "s have"} no interview date yet` : "All shortlisted teams have an interview date"} cta="Open selection" onClick={() => setView("selection")} accent={accent} />
-                <Alert
-                  icon={<PackageCheck size={15} />}
-                  tone={deliverables.overdue ? T.danger : undefined}
-                  text={deliverables.outstanding
-                    ? `${deliverables.teamsOwing} team${deliverables.teamsOwing === 1 ? "" : "s"} owe${deliverables.teamsOwing === 1 ? "s" : ""} us ${deliverables.outstanding} deliverable${deliverables.outstanding === 1 ? "" : "s"}` +
-                      (deliverables.overdue ? ` — ${deliverables.overdue} overdue or due today` : "")
-                    : "Every deliverable on file is submitted"}
-                  cta="See what's owed"
-                  onClick={() => { setView("teams"); setTeamsTab("deliverables"); }}
-                  accent={accent} />
+                {/* Both phases, one line: what teams owe us and who has gone quiet. */}
+                {(() => {
+                  const owing = deliverables.teamsOwing + p2Owed.teamsOwing;
+                  const out = deliverables.outstanding + p2Owed.outstanding;
+                  const late = deliverables.overdue + p2Owed.overdue;
+                  const split = deliverables.outstanding && p2Owed.outstanding
+                    ? ` (Phase I ${deliverables.outstanding}, Phase II ${p2Owed.outstanding})` : "";
+                  const goP2 = p2Owed.overdue > deliverables.overdue || (!deliverables.outstanding && p2Owed.outstanding);
+                  return (
+                    <Alert icon={<PackageCheck size={15} />} tone={late ? T.danger : undefined}
+                      text={out
+                        ? `${owing} team${owing === 1 ? "" : "s"} owe${owing === 1 ? "s" : ""} us ${out} deliverable${out === 1 ? "" : "s"}${split}` + (late ? ` — ${late} overdue or due today` : "")
+                        : "Every deliverable on file is submitted, in both phases"}
+                      cta="See what's owed"
+                      onClick={() => { if (goP2) { setView("phase2"); setP2Tab("deliverables"); } else { setView("teams"); setTeamsTab("deliverables"); } }}
+                      accent={accent} />
+                  );
+                })()}
+                {(() => {
+                  const quiet1 = profiles.filter((p) => lastCheckin(p).stale);
+                  const quiet2 = p2Teams.filter((p) => lastCheckin(p).stale);
+                  const n = quiet1.length + quiet2.length;
+                  const names = [...quiet1, ...quiet2].map((p) => p.name || "Untitled").slice(0, 3).join(", ");
+                  return (
+                    <Alert icon={<CalendarDays size={15} />}
+                      text={n
+                        ? `${n} running team${n === 1 ? " hasn't" : "s haven't"} had a check-in in ${Math.round(CHECKIN_DAYS / 7)}+ weeks — ${names}${n > 3 ? "…" : ""}`
+                        : "Every running team has had a check-in in the last five weeks"}
+                      cta={n ? "Open team" : "Open Phase I"}
+                      onClick={() => {
+                        if (quiet1.length || !quiet2.length) { setView("teams"); setTeamsTab("profiles"); if (quiet1[0]) { setProfileCallFilter("all"); setActiveProfileId(quiet1[0].id); } }
+                        else { setView("phase2"); setP2Tab("profiles"); setP2CohortFilter("all"); setActiveP2Id(quiet2[0].id); }
+                      }}
+                      accent={accent} />
+                  );
+                })()}
                 <Alert icon={<Users size={15} />}
                   tone={gapCount ? T.danger : undefined}
                   text={gapCount
@@ -2297,8 +2374,8 @@ export default function App() {
 
           {view === "calls" && (
             <>
-              <div className="h1 disp">Calls & promotion</div>
-              <div className="sub">Calls launch together each spring. Add a themed call, give it a topic and pick its colour — its teams carry that colour everywhere they appear.</div>
+              <PageHead title="Calls & promotion"
+                sub="Calls launch together each spring. Add a themed call, give it a topic and pick its colour — its teams carry that colour everywhere they appear." />
               <div className="scards" style={{ marginTop: 20 }}>
                 {callList.map((c) => (
                   <CallCard key={c.id} call={c} palette={PALETTE}
@@ -2334,7 +2411,7 @@ export default function App() {
               <div className="card" style={{ marginTop: 16 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                   <div className="eyebrow">Class visits · {classes.filter((c) => c.done).length}/{classes.length} done</div>
-                  <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={addClass}><Plus size={14} /> Add class</button>
+                  <button className="btn ghost sm" onClick={addClass}><Plus size={14} /> Add class</button>
                 </div>
 
                 <label
@@ -2349,7 +2426,7 @@ export default function App() {
                     <div style={{ fontWeight: 600, fontSize: 13 }}>Drop a class list to add them in bulk</div>
                     <div style={{ color: T.muted, fontSize: 11.5 }}>CSV or Excel. We map course, professor, campus and date.</div>
                   </div>
-                  <span className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }}>Browse</span>
+                  <span className="btn ghost sm">Browse</span>
                   <input type="file" accept=".csv,.xlsx,.xls" style={{ display: "none" }} onChange={(e) => onClassFile(e.target.files[0])} />
                 </label>
                 {classMsg && <div style={{ fontSize: 12, color: T.ok, marginBottom: 10 }}>{classMsg}</div>}
@@ -2397,7 +2474,7 @@ export default function App() {
               <div className="card" style={{ marginTop: 16 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                   <div className="eyebrow"><Pizza size={12} style={{ verticalAlign: -2, marginRight: 5 }} />Pizza Q&amp;As · {pizza.filter((p) => p.done).length}/{pizza.length} done</div>
-                  <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={addPizza}><Plus size={14} /> Add Q&amp;A</button>
+                  <button className="btn ghost sm" onClick={addPizza}><Plus size={14} /> Add Q&amp;A</button>
                 </div>
                 <div style={{ overflowX: "auto" }}>
                   <table className="fixedtable">
@@ -2431,16 +2508,14 @@ export default function App() {
 
           {view === "selection" && (
             <>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
-                <div>
-                  <div className="h1 disp">Selection pipeline</div>
-                  <div className="sub">{JUDGES} judges score out of {JUDGE_MAX}, so {MAX_SCORE} is the ceiling. Enter the panel's scores one by one and the total is worked out for you — or type a total if that is all you have. Track who wants to interview each team, then take them to a decision.</div>
-                </div>
+              <PageHead title="Selection pipeline"
+                sub={`${JUDGES} judges score out of ${JUDGE_MAX}, so ${MAX_SCORE} is the ceiling. Enter the panel's scores one by one and the total is worked out for you — or type a total if that is all you have. Track who wants to interview each team, then take them to a decision.`} />
+              <TabRow>
                 <div className="tabs">
                   <button className={selTab === "list" ? "on" : ""} onClick={() => setSelTab("list")}>Interview list</button>
                   <button className={selTab === "board" ? "on" : ""} onClick={() => setSelTab("board")}>Board</button>
                 </div>
-              </div>
+              </TabRow>
 
               <div style={{ marginTop: 18 }}>
                 {!importedName ? (
@@ -2455,7 +2530,7 @@ export default function App() {
                       <div style={{ fontWeight: 600, fontSize: 13.5 }}>Drop your Airtable export to load the pipeline</div>
                       <div style={{ color: T.muted, fontSize: 12 }}>Excel or CSV. We map team, score, call, flagged-by, interview date and outcome — a “Cybersecurity” or “Special” value lands the team in that call. Showing sample data until you import.</div>
                     </div>
-                    <span className="btn ghost" style={{ fontSize: 12, padding: "7px 13px" }}>Browse</span>
+                    <span className="btn ghost sm">Browse</span>
                     <input type="file" accept=".csv,.xlsx,.xls" style={{ display: "none" }} onChange={(e) => onFile(e.target.files[0])} />
                   </label>
                 ) : (
@@ -2503,7 +2578,7 @@ export default function App() {
                 <div style={{ marginTop: 18 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
                     <div className="eyebrow">{visibleTeams.length} team{visibleTeams.length === 1 ? "" : "s"} shown · click any field to edit</div>
-                    <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }}
+                    <button className="btn ghost sm"
                       onClick={() => setTeams((ts) => [...ts, blankTeam()])}>
                       <Plus size={14} /> Add team
                     </button>
@@ -2650,472 +2725,117 @@ export default function App() {
 
           {view === "teams" && (
             <>
-              {/* The heading, the tabs and the call filter are one fixed frame.
-                  They previously shared a wrapping flex row with the "Add team"
-                  button, which exists only on Profiles — so switching tab
-                  changed the row's width, and the tab bar jumped between the
-                  end of the heading line and its own line below. Nothing in
-                  this block now depends on which tab is open. */}
-              <div>
-                <div className="h1 disp">Phase I teams · cycle {viewedCycle.label}</div>
-                <div className="sub">The Seed-year cohort — members, onboarding, check-ins, deliverables, and each team's seed budget. The larger Maturation awards live under Phase II teams.</div>
-              </div>
-
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap",
-                            marginTop: 18, paddingBottom: 14, borderBottom: `1px solid ${T.hairline}` }}>
-                <div className="tabs">
-                  <button className={teamsTab === "profiles" ? "on" : ""} onClick={() => setTeamsTab("profiles")}>Profiles</button>
-                  <button className={teamsTab === "deliverables" ? "on" : ""} onClick={() => setTeamsTab("deliverables")}>
-                    Deliverables
-                    {deliverables.outstanding > 0 && (
-                      <span className="badge" style={{ marginLeft: 6, background: deliverables.overdue ? T.danger : T.warnInk }}>
-                        {deliverables.outstanding}
-                      </span>
-                    )}
-                  </button>
-                  <button className={teamsTab === "contacts" ? "on" : ""} onClick={() => setTeamsTab("contacts")}>
-                    Contacts
-                  </button>
-                </div>
-                {/* Always present, on every tab: all three are views of the same
-                    team profiles, so adding one is always the right action. */}
-                <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }}
-                  onClick={() => { const p = blankProfile(null); setProfiles((ps) => [...ps, p]); setTeamsTab("profiles"); setActiveProfileId(p.id); }}>
-                  <Plus size={13} /> Add team
-                </button>
-              </div>
-
-              {/* One filter, shared by all three tabs, in the same place on each. */}
-              <div className="chiprow" style={{ marginTop: 14 }}>
-                <button className={"chip chipx" + (profileCallFilter === "all" ? " on" : "")} onClick={() => setProfileCallFilter("all")}>
-                  <span className="lbl">All calls</span><span className="n">{profileRows.length}</span>
-                </button>
-                {teamFilterGroups.map(({ call, teams: ps }) => (
-                  <button key={call.id} title={call.topic}
-                    className={"chip chipx" + (profileCallFilter === call.id ? " on" : "")}
-                    style={profileCallFilter === call.id
-                      ? { background: call.accent, borderColor: call.accent, color: "#fff" }
-                      : { borderColor: call.accent, color: call.accent }}
-                    onClick={() => setProfileCallFilter(call.id)}>
-                    <span className="lbl">{call.name}{call.topic && call.id !== UNASSIGNED ? ` · ${call.topic}` : ""}</span>
-                    <span className="n">{ps.length}</span>
-                  </button>
-                ))}
-              </div>
+              <PageHead title={`Phase I teams · cycle ${viewedCycle.label}`}
+                sub="The seed year, from kickoff to Demo Day: each team's profile, seed budget, documents, deliverables and monthly check-ins. Teams funded at Demo Day carry on under Phase II teams." />
+              <PhaseTabs tab={teamsTab} onTab={setTeamsTab} owed={deliverables}
+                onAdd={() => { const p = blankProfile(null); setProfiles((ps) => [...ps, p]); setTeamsTab("profiles"); setActiveProfileId(p.id); }} />
+              <GroupChips allLabel="All calls" allCount={profileRows.length} value={profileCallFilter} onChange={setProfileCallFilter}
+                groups={teamFilterGroups.map(({ call, teams: ps }) => ({
+                  id: call.id, title: call.topic, accent: call.accent, count: ps.length,
+                  label: `${call.name}${call.topic && call.id !== UNASSIGNED ? ` · ${call.topic}` : ""}`,
+                }))} />
+              {missingProfiles.length > 0 && (
+                <Handoff
+                  text={`${missingProfiles.length} team${missingProfiles.length === 1 ? " was" : "s were"} selected but ${missingProfiles.length === 1 ? "isn't" : "aren't"} set up here yet.`}
+                  action={`Add ${missingProfiles.length === 1 ? "it" : "them"}`} onClick={createMissingProfiles} />
+              )}
 
               {teamsTab === "contacts" ? (
-                <>
-                  {/* One directory of every person on file, so a mailing list
-                      never has to be rebuilt team by team. Past cycles are off
-                      by default — they are a separate read from storage — and
-                      are dimmed and marked when switched on. The call filter
-                      lives in the shared sub-header above. */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 16 }}>
-                    <button className="mini" onClick={copyEmails} title="Copy every address in this view, ready to paste into a mail client">
-                      <Copy size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
-                      {copiedAll ? "Copied ✓" : `Copy ${contactEmails.length} email${contactEmails.length === 1 ? "" : "s"}`}
+                <ContactsTab rows={visibleContacts} groupLabel="Call" showCycle
+                  onPrint={(rows) => printContacts(rows, "Phase I")}
+                  emptyText="No contacts in this view. People come from the Members field on each team — one per line, name and email."
+                  tools={archive === null ? (
+                    <button className="mini" onClick={loadArchive} disabled={archiveBusy} title="Also read the team profiles stored for every past cycle">
+                      {archiveBusy ? "Loading past cycles…" : "+ Include past cycles"}
                     </button>
-                    <a className="mini" style={{ textDecoration: "none", display: "inline-flex", alignItems: "center" }}
-                      href={`mailto:?bcc=${encodeURIComponent(contactEmails.join(","))}`}
-                      title="Open your mail app with everyone in BCC, so nobody sees anyone else's address">
-                      <Mail size={11} style={{ verticalAlign: -1, marginRight: 4 }} /> Email everyone (BCC)
-                    </a>
-                    <button className="mini" onClick={() => printContacts(visibleContacts)}>
-                      <Printer size={11} style={{ verticalAlign: -1, marginRight: 4 }} /> Print
-                    </button>
-                    {archive === null ? (
-                      <button className="mini" onClick={loadArchive} disabled={archiveBusy}
-                        title="Also read the team profiles stored for every past cycle">
-                        {archiveBusy ? "Loading past cycles…" : "+ Include past cycles"}
-                      </button>
-                    ) : (
-                      <button className="mini on" onClick={() => setArchive(null)} title="Show this cycle only">
-                        <Check size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
-                        Past cycles shown{archive.length ? "" : " · none found"}
-                      </button>
-                    )}
-                    <span className="mono" style={{ fontSize: 11.5, color: T.muted, marginLeft: "auto" }}>
-                      {visibleContacts.length} contact{visibleContacts.length === 1 ? "" : "s"}
-                    </span>
-                  </div>
-
-                  {visibleContacts.length === 0 ? (
-                    <div className="card" style={{ marginTop: 16, color: T.muted, fontSize: 13.5 }}>
-                      No contacts in this view. People come from the Members field on each team profile — one per line, name and email.
-                    </div>
                   ) : (
-                    <div className="card" style={{ marginTop: 14 }}>
-                      <div style={{ overflowX: "auto" }}>
-                        <table>
-                          <thead>
-                            <tr>
-                              <th scope="col">Name</th><th scope="col">Email</th>
-                              <th scope="col">Team</th><th scope="col">Call</th><th scope="col">Cycle</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {visibleContacts.map((r) => (
-                              <tr key={r.rowId} style={r.current ? undefined : { opacity: 0.62 }}>
-                                <td style={{ minWidth: 150, fontWeight: 600 }}>{r.name}</td>
-                                <td style={{ minWidth: 190 }}>
-                                  {r.email
-                                    ? <a className="mono" href={`mailto:${r.email}`} style={{ fontSize: 11.5, color: T.info }}>{r.email}</a>
-                                    : <span style={{ color: T.muted, fontSize: 12 }}>no email on file</span>}
-                                </td>
-                                <td style={{ fontSize: 12.5 }}>{r.team}</td>
-                                <td><Pill bg={T.surface} fg={r.call.accent}>{r.call.name}</Pill></td>
-                                <td className="mono" style={{ fontSize: 11, color: T.muted, whiteSpace: "nowrap" }}>
-                                  {r.cycleLabel}{r.current ? "" : ` · ${r.note}`}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  )}
-                </>
+                    <button className="mini on" onClick={() => setArchive(null)} title="Show this cycle only">
+                      <Check size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
+                      Past cycles shown{archive.length ? "" : " · none found"}
+                    </button>
+                  )} />
               ) : teamsTab === "deliverables" ? (
-                <>
-                  {/* What are we waiting on? One list, worst first, so nothing
-                      has to be hunted for team by team. It answers the same
-                      call filter as the other two tabs; the count on the tab
-                      itself stays the cohort-wide total, matching the sidebar. */}
-                  <div className="grid resp" style={{ gridTemplateColumns: "repeat(3,1fr)", marginTop: 16, gap: 12 }}>
-                    <Stat n={shownDeliverables.overdue} l={`Overdue or due today`} accent={shownDeliverables.overdue ? T.danger : accent} />
-                    <Stat n={shownDeliverables.soon} l={`Due within ${SOON_DAYS} days`} accent={shownDeliverables.soon ? T.warnInk : accent} />
-                    <Stat n={shownDeliverables.teamsOwing} l="Teams that owe us something" accent={accent} />
-                  </div>
-
-                  <div className="card" style={{ marginTop: 16 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 4 }}>
-                      <div className="eyebrow">
-                        <Inbox size={12} style={{ verticalAlign: -2, marginRight: 5 }} />
-                        Waiting on · {shownDeliverables.outstanding} outstanding
-                        {profileCallFilter !== "all" && ` in ${filteredCallName}`}
-                      </div>
-                      <div className="mono" style={{ fontSize: 11.5, color: T.muted }}>Today is {fmtDate(todayISO())}</div>
-                    </div>
-
-                    {shownDeliverables.rows.length === 0 ? (
-                      <div className="empty">
-                        <PackageCheck size={22} style={{ color: T.ok, display: "block", margin: "0 auto 8px" }} />
-                        {profileCallFilter !== "all" && deliverables.outstanding > 0
-                          ? `Nothing outstanding in ${filteredCallName}. ${deliverables.outstanding} elsewhere — switch to All calls to see them.`
-                          : "Nothing outstanding. Every deliverable on file is submitted."}
-                      </div>
-                    ) : shownDeliverables.rows.map((d) => (
-                      <div key={`${d.profileId}:${d.id}`} className="delrow">
-                        <Pill bg={d.state.bg} fg={d.state.fg}>{d.state.label}</Pill>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 13.5, fontWeight: 600 }}>{d.title || "Untitled deliverable"}</div>
-                          <div style={{ color: T.muted, fontSize: 12, marginTop: 2 }}>
-                            {d.team}{d.due ? ` · due ${fmtDate(d.due)}` : " · no due date set"}
-                          </div>
-                          {d.note && <div style={{ color: T.muted, fontSize: 12, marginTop: 5, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{d.note}</div>}
-                        </div>
-                        <div style={{ display: "flex", gap: 6, flex: "0 0 auto", alignItems: "center" }}>
-                          <button className="mini" onClick={() => updSub(d.profileId, "deliverables", d.id, { status: "submitted" })}>
-                            <Check size={11} style={{ verticalAlign: -1, marginRight: 3 }} />Mark submitted
-                          </button>
-                          <button className="mini" title="Open this team's profile"
-                            onClick={() => { setActiveProfileId(d.profileId); setProfileCallFilter("all"); setTeamsTab("profiles"); }}>Open team</button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Per-team roll-up, so it is obvious who is consistently behind. */}
-                  {visibleProfiles.length > 0 && (
-                    <div className="card" style={{ marginTop: 16 }}>
-                      <div className="eyebrow" style={{ marginBottom: 6 }}>By team</div>
-                      <div style={{ overflowX: "auto" }}>
-                        <table>
-                          <thead><tr><th scope="col">Team</th><th scope="col">Outstanding</th><th scope="col">Submitted</th><th scope="col">Status</th><th scope="col">Documents</th><th scope="col" aria-label="Open" /></tr></thead>
-                          <tbody>
-                            {[...visibleProfiles].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => {
-                              const all = p.deliverables || [];
-                              const out = all.filter(isOutstanding);
-                              const worst = profileDeliverableState(p);
-                              return (
-                                <tr key={p.id}>
-                                  <td style={{ minWidth: 160, fontWeight: 600 }}>{p.name || "Untitled team"}</td>
-                                  <td className="mono">{out.length}</td>
-                                  <td className="mono" style={{ color: T.muted }}>{all.length - out.length}/{all.length}</td>
-                                  <td>{!isRunning(p)
-                                    ? <Pill bg={statusOf(p).bg} fg={statusOf(p).fg}><Ban size={12} /> {statusOf(p).label}</Pill>
-                                    : worst
-                                      ? <Pill bg={worst.bg} fg={worst.fg}>{worst.label}</Pill>
-                                      : <Pill bg={T.okTint} fg={T.ok}><Check size={12} /> All in</Pill>}</td>
-                                  <td>{(() => {
-                                    const ds = docsSummary(p);
-                                    return ds.missing.length
-                                      ? <Pill bg={T.warnTint} fg={T.warnInk}><span title={`Missing: ${ds.missing.join(", ")}`}>{ds.onFile}/{ds.total} · no {ds.missing.map((m) => m.toLowerCase()).join(" or ")}</span></Pill>
-                                      : <Pill bg={T.okTint} fg={T.ok}><Check size={12} /> Both on file</Pill>;
-                                  })()}</td>
-                                  <td>
-                                    <button className="mini" onClick={() => { setActiveProfileId(p.id); setProfileCallFilter("all"); setTeamsTab("profiles"); }}>Open</button>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  )}
-                </>
+                <DeliverablesTab teams={visibleProfiles} summary={shownDeliverables}
+                  scopeNote={profileCallFilter !== "all" ? filteredCallName : ""} elsewhere={deliverables.outstanding}
+                  onSubmit={(pid, id) => updSub(pid, "deliverables", id, { status: "submitted" })}
+                  onOpen={(pid) => { setActiveProfileId(pid); setProfileCallFilter("all"); setTeamsTab("profiles"); }}
+                  onAssign={assignP1} />
+              ) : profiles.length === 0 ? (
+                <div className="card" style={{ marginTop: 16, color: T.muted, fontSize: 13.5 }}>
+                  No Phase I teams yet. They come from the teams marked Selected in Selection, or add one with “Add team”.
+                </div>
               ) : (
                 <>
-                  {missingProfiles.length > 0 && (
-                    <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", background: T.tint, borderRadius: 12, padding: "10px 14px" }}>
-                      <span style={{ fontSize: 13, color: T.burgundy }}>
-                        {missingProfiles.length} Selected team{missingProfiles.length === 1 ? " doesn't" : "s don't"} have a profile yet.
-                      </span>
-                      <button className="mini" style={{ borderColor: T.burgundy, color: T.burgundy }} onClick={createMissingProfiles}>Create {missingProfiles.length === 1 ? "it" : "them"}</button>
-                    </div>
-                  )}
+                  <div className="grid resp4" style={{ gridTemplateColumns: "repeat(4,minmax(0,1fr))", marginTop: 16, gap: 12 }}>
+                    <Stat n={visibleProfiles.filter(isRunning).length} l={`Teams running${profileCallFilter !== "all" ? ` in ${filteredCallName}` : ""}`} accent={accent} />
+                    <Stat n={`$${cohortBudget.allocated.toLocaleString()}`} l={`Seed budgets · ${cohortBudget.withBudget} team${cohortBudget.withBudget === 1 ? "" : "s"}`} accent={accent} />
+                    <Stat n={`$${cohortBudget.spent.toLocaleString()}`} l="Spent so far" accent={accent} />
+                    <Stat n={`$${Math.max(cohortBudget.allocated - cohortBudget.spent, 0).toLocaleString()}`}
+                      l={cohortBudget.over > 0 ? `Unspent · ${cohortBudget.over} team${cohortBudget.over === 1 ? "" : "s"} over budget` : "Unspent"}
+                      accent={cohortBudget.over > 0 ? T.danger : accent} />
+                  </div>
 
-                  {profiles.length === 0 ? (
-                    <div className="card" style={{ marginTop: 16, color: T.muted, fontSize: 13.5 }}>
-                      No team profiles yet. They're created from the Selection pipeline's Selected teams, or add one manually.
+                  {visibleProfiles.length === 0 ? (
+                    <div className="card" style={{ marginTop: 14, color: T.muted, fontSize: 13.5 }}>
+                      No teams in this call yet. Open a team from another call and change its call, or add one.
                     </div>
                   ) : (
-                    <>
-                      {/* What the cohort in view has been given, and what has
-                          gone out. Scoped by the call filter like everything
-                          else on this screen. Hidden until a budget exists, so
-                          it never sits there as three zeroes. */}
-                      {cohortBudget.allocated > 0 && (
-                        <div className="grid resp" style={{ gridTemplateColumns: "repeat(3,1fr)", marginTop: 16, gap: 12 }}>
-                          <Stat n={`$${cohortBudget.allocated.toLocaleString()}`}
-                            l={`Allocated across ${cohortBudget.withBudget} team${cohortBudget.withBudget === 1 ? "" : "s"}${profileCallFilter !== "all" ? ` in ${filteredCallName}` : ""}`}
-                            accent={accent} />
-                          <Stat n={`$${cohortBudget.spent.toLocaleString()}`} l="Spent so far" accent={accent} />
-                          <Stat n={`$${Math.max(cohortBudget.allocated - cohortBudget.spent, 0).toLocaleString()}`}
-                            l={cohortBudget.over > 0
-                              ? `Unspent · ${cohortBudget.over} team${cohortBudget.over === 1 ? "" : "s"} over budget`
-                              : "Unspent"}
-                            accent={cohortBudget.over > 0 ? T.danger : accent} />
-                        </div>
-                      )}
+                    <TeamPicker activeId={activeProfile && activeProfile.id} onPick={setActiveProfileId}
+                      moneyOf={(p) => ({ granted: budgetOf(p), used: spentOf(p) })}
+                      groups={shownProfileGroups.map(({ call, teams: ps }) => ({
+                        id: call.id, accent: call.accent, teams: ps,
+                        label: call.id === UNASSIGNED ? "Unassigned" : `${call.name} call`,
+                      }))} />
+                  )}
 
-                      {/* A team chip carries its worst outstanding deliverable, so
-                          the teams to chase are visible without opening each one. */}
-                      {visibleProfiles.length === 0 ? (
-                        <div className="card" style={{ marginTop: 14, color: T.muted, fontSize: 13.5 }}>
-                          No teams in this call yet. Open a team from another call and change its call, or add one.
-                        </div>
-                      ) : shownProfileGroups.map(({ call, teams: groupProfiles }) => {
-                        if (!groupProfiles.length) return null;
-                        return (
-                          <div key={call.id} style={{ marginTop: 14 }}>
-                            <div className="eyebrow" style={{ marginBottom: 7, color: call.accent }}>
-                              {call.id === UNASSIGNED ? "Unassigned" : `${call.name} call`} · {groupProfiles.length} team{groupProfiles.length === 1 ? "" : "s"}
-                            </div>
-                            <div className="chiprow">
-                              {[...groupProfiles].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => {
-                                const worst = profileDeliverableState(p);
-                                const st = statusOf(p);
-                                const on = activeProfile && activeProfile.id === p.id;
-                                const running = isRunning(p);
-                                const hint = [p.name || "Untitled", st.id !== "active" ? st.label : null, worst ? worst.label : null]
-                                  .filter(Boolean).join(" — ");
-                                return (
-                                  <button key={p.id} title={hint}
-                                    className={"chip" + (on ? " on" : "")} onClick={() => setActiveProfileId(p.id)}
-                                    style={on
-                                      ? { display: "inline-flex", alignItems: "center", gap: 7, background: call.accent, borderColor: call.accent }
-                                      : { display: "inline-flex", alignItems: "center", gap: 7, borderLeft: `3px solid ${call.accent}`,
-                                          opacity: running ? 1 : 0.55,
-                                          textDecoration: running ? "none" : "line-through" }}>
-                                    {!running && <Ban size={11} style={{ flex: "0 0 auto", color: on ? "#fff" : T.muted }} />}
-                                    {running && worst && <span style={{ width: 7, height: 7, borderRadius: 999, background: on ? "#fff" : worst.fg, flex: "0 0 7px" }} />}
-                                    {p.name || "Untitled"}
-                                    {st.id === "atrisk" && (
-                                      <span className="mono" style={{ fontSize: 9.5, color: on ? "#fff" : st.fg, opacity: on ? 0.9 : 1 }}>at risk</span>
-                                    )}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        );
-                      })}
-
-                      {activeProfile && (
-                        <div className="grid resp" style={{ gridTemplateColumns: "1fr 1.3fr", marginTop: 14 }}>
-                          <div className="card">
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                              <div className="eyebrow">Profile</div>
-                              <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                                {/* Which call this team came from — the same list
-                                    Selection uses, so the two screens agree. */}
-                                <select
-                                  value={profileCall(activeProfile).id}
-                                  aria-label={`Call for ${activeProfile.name || "this team"}`}
-                                  title="Which call this team applied to — changing it moves the team to that group"
-                                  onChange={(e) => setProfileCall(activeProfile.id, e.target.value)}
-                                  style={{ fontFamily: MONO, fontSize: 11.5, padding: "5px 7px", borderRadius: 8, background: T.surface, maxWidth: 210,
-                                           border: `1px solid ${profileCall(activeProfile).accent}`, color: profileCall(activeProfile).accent, fontWeight: 600 }}>
-                                  {callList.map((c) => (
-                                    <option key={c.id} value={c.id}>{c.name}{c.topic ? ` — ${c.topic}` : ""}</option>
-                                  ))}
-                                  {profileCall(activeProfile).id === UNASSIGNED && <option value={UNASSIGNED}>Unassigned</option>}
-                                </select>
-                                <IconBtn title="Remove profile" onClick={() => rmProfile(activeProfile.id)}><Trash2 size={14} /></IconBtn>
-                              </div>
-                            </div>
-                            <EInput value={activeProfile.name} onChange={(v) => updProfile(activeProfile.id, { name: v })} placeholder="Team name" />
-                            <div className="eyebrow" style={{ margin: "12px 0 3px" }}>Members</div>
-                            <NoteField value={activeProfile.members} onChange={(v) => updProfile(activeProfile.id, { members: v })}
-                              placeholder={"One per line — name, program, email"} minRows={4} label="Members" />
-                            {isRunning(activeProfile) && !parseMembers(activeProfile.members).length && (
-                              <div style={{ fontSize: 12, color: T.warnInk, marginTop: 4 }}>No members yet, so this team won't appear on attendance lists.</div>
-                            )}
-                            <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 8, marginTop: 10 }}>
-                              <div><div className="eyebrow" style={{ marginBottom: 3 }}>Department</div><EInput value={activeProfile.dept} onChange={(v) => updProfile(activeProfile.id, { dept: v })} placeholder="e.g. MIE" /></div>
-                              <div><div className="eyebrow" style={{ marginBottom: 3 }}>Supervisor</div><EInput value={activeProfile.supervisor} onChange={(v) => updProfile(activeProfile.id, { supervisor: v })} placeholder="Professor" /></div>
-                              <div><div className="eyebrow" style={{ marginBottom: 3 }}>Mentor</div><EInput value={activeProfile.mentor} onChange={(v) => updProfile(activeProfile.id, { mentor: v })} placeholder="Assigned mentor" /></div>
-                              <div>
-                                <div className="eyebrow" style={{ marginBottom: 3 }}>Status</div>
-                                <select
-                                  value={statusOf(activeProfile).id}
-                                  aria-label="Team status"
-                                  onChange={(e) => updProfile(activeProfile.id, { status: e.target.value })}
-                                  style={{
-                                    fontFamily: MONO, fontSize: 11.5, padding: "5px 7px", borderRadius: 8,
-                                    background: T.surface, fontWeight: 600, maxWidth: "100%",
-                                    border: `1px solid ${statusOf(activeProfile).fg}`, color: statusOf(activeProfile).fg,
-                                  }}>
-                                  {TEAM_STATUS.map((st) => <option key={st.id} value={st.id}>{st.label}</option>)}
-                                </select>
-                              </div>
-                              <div>
-                                <div className="eyebrow" style={{ marginBottom: 3 }}>Finance account</div>
-                                <button className={"mini" + (activeProfile.finance === "opened" ? " on" : "")}
-                                  style={activeProfile.finance === "opened" ? { borderColor: T.ok, color: T.ok, background: T.surface } : {}}
-                                  onClick={() => updProfile(activeProfile.id, { finance: activeProfile.finance === "opened" ? "pending" : "opened" })}>
-                                  {activeProfile.finance === "opened" ? <><Check size={11} style={{ verticalAlign: -1 }} /> Opened</> : "Pending"}
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Seed-year budget. Phase II tracks an award paid out
-                                in tranches; Phase I is a single sum drawn down
-                                against the team's Financial Services account, so
-                                two figures say everything: what they were given
-                                and what has gone out. */}
-                            {(() => {
-                              const budget = budgetOf(activeProfile);
-                              const spent = spentOf(activeProfile);
-                              const over = Math.max(spent - budget, 0);
-                              const left = Math.max(budget - spent, 0);
-                              const pct = budget ? Math.min(Math.round((spent / budget) * 100), 100) : 0;
-                              return (
-                                <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${T.hairline}` }}>
-                                  <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
-                                    <div>
-                                      <div className="eyebrow" style={{ marginBottom: 3 }}>Budget</div>
-                                      <span className="moneyfield">
-                                        <span className="cur">$</span>
-                                        <EInput value={activeProfile.budget} mono w="82px" placeholder="0" ariaLabel="Seed-year budget"
-                                          onChange={(v) => updProfile(activeProfile.id, { budget: money(v) })} />
-                                      </span>
-                                    </div>
-                                    <div>
-                                      <div className="eyebrow" style={{ marginBottom: 3 }}>Spent so far</div>
-                                      <span className={"moneyfield" + (budget > 0 && spent === 0 ? " empty" : "")}
-                                        title={budget > 0 && spent === 0 ? "Nothing recorded as spent yet" : undefined}>
-                                        <span className="cur">$</span>
-                                        <EInput value={activeProfile.spent} mono w="82px" placeholder="0" ariaLabel="Spent so far"
-                                          onChange={(v) => updProfile(activeProfile.id, { spent: money(v) })} />
-                                      </span>
-                                    </div>
-                                  </div>
-                                  {budget > 0 && (
-                                    <>
-                                      <div className="track" style={{ marginTop: 11 }}>
-                                        <div style={{ width: pct + "%", background: over > 0 ? T.danger : left === 0 ? T.ok : accent }} />
-                                      </div>
-                                      <div style={{ fontSize: 11.5, marginTop: 5, color: over > 0 ? T.danger : T.muted }}>
-                                        {over > 0
-                                          ? `$${over.toLocaleString()} over budget`
-                                          : left > 0
-                                            ? `$${left.toLocaleString()} of $${budget.toLocaleString()} remaining`
-                                            : "Fully spent"}
-                                      </div>
-                                    </>
-                                  )}
-                                </div>
-                              );
-                            })()}
-                            <div style={{ marginTop: 14 }}>
-                              <TeamDocs rec={activeProfile} onChange={(patch) => updProfile(activeProfile.id, patch)} />
-                            </div>
-
-                            <div className="eyebrow" style={{ margin: "14px 0 3px" }}>Notes</div>
-                            <NoteField value={activeProfile.notes} onChange={(v) => updProfile(activeProfile.id, { notes: v })}
-                              placeholder="Anything worth remembering — context, risks, decisions, who said what. Grows as you type." minRows={6} />
-                          </div>
-
-                          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                            <div className="card">
-                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                                <div className="eyebrow">Progress meetings · {(activeProfile.meetings || []).length}</div>
-                                <button className="mini" onClick={() => addSub(activeProfile.id, "meetings", { date: todayISO(), note: "" })}><Plus size={11} style={{ verticalAlign: -1 }} /> Meeting</button>
-                              </div>
-                              {(activeProfile.meetings || []).length === 0 && <div style={{ color: T.muted, fontSize: 12.5 }}>No meetings logged yet.</div>}
-                              {(activeProfile.meetings || []).map((m) => (
-                                <div key={m.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "9px 0", borderBottom: `1px solid ${T.hairline}` }}>
-                                  <div style={{ flex: "0 0 auto", paddingTop: 1 }}>
-                                    <DateField value={m.date} onChange={(v) => updSub(activeProfile.id, "meetings", m.id, { date: v })} w="126px" title="Meeting date" />
-                                  </div>
-                                  <NoteField value={m.note} onChange={(v) => updSub(activeProfile.id, "meetings", m.id, { note: v })}
-                                    placeholder="Notes, decisions, action items — as long as you need" minRows={2} />
-                                  <IconBtn title="Remove meeting" style={{ marginTop: 4 }} onClick={() => rmSub(activeProfile.id, "meetings", m.id)}><Trash2 size={13} /></IconBtn>
-                                </div>
-                              ))}
-                            </div>
-
-                            <div className="card">
-                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, gap: 10, flexWrap: "wrap" }}>
-                                <div className="eyebrow">
-                                  Deliverables · {(activeProfile.deliverables || []).filter((d) => d.status === "submitted").length}/{(activeProfile.deliverables || []).length} submitted
-                                </div>
-                                <button className="mini" onClick={() => addSub(activeProfile.id, "deliverables", { title: "", due: "", status: "pending", note: "" })}><Plus size={11} style={{ verticalAlign: -1 }} /> Deliverable</button>
-                              </div>
-                              {(activeProfile.deliverables || []).length === 0 && <div style={{ color: T.muted, fontSize: 12.5 }}>Nothing due yet.</div>}
-                              {(activeProfile.deliverables || []).map((d) => {
-                                const st = deliverableState(d);
-                                const submitted = d.status === "submitted";
-                                return (
-                                  <div key={d.id} style={{ padding: "10px 0", borderBottom: `1px solid ${T.hairline}` }}>
-                                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                                      <span style={{ flex: 1, minWidth: 150 }}>
-                                        <EInput value={d.title} onChange={(v) => updSub(activeProfile.id, "deliverables", d.id, { title: v })} placeholder="What they owe us" />
-                                      </span>
-                                      <DateField value={d.due} onChange={(v) => updSub(activeProfile.id, "deliverables", d.id, { due: v })} title="Due date" />
-                                      <button
-                                        className="mini"
-                                        title={submitted ? "Mark as still outstanding" : "Mark as submitted"}
-                                        onClick={() => updSub(activeProfile.id, "deliverables", d.id, { status: submitted ? "pending" : "submitted" })}
-                                        style={{ borderColor: st.fg, color: submitted ? "#fff" : st.fg, background: submitted ? T.ok : T.surface, whiteSpace: "nowrap" }}>
-                                        {submitted ? <><Check size={11} style={{ verticalAlign: -1, marginRight: 3 }} />Submitted</> : st.label}
-                                      </button>
-                                      <IconBtn title="Remove deliverable" onClick={() => rmSub(activeProfile.id, "deliverables", d.id)}><Trash2 size={13} /></IconBtn>
-                                    </div>
-                                    <NoteField value={d.note} onChange={(v) => updSub(activeProfile.id, "deliverables", d.id, { note: v })}
-                                      placeholder="Notes — what exactly is expected, what's been chased, what's missing" minRows={1}
-                                      style={{ marginTop: 7, fontSize: 12.5 }} />
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </>
+                  {activeProfile && (
+                    <div className="grid resp" style={{ gridTemplateColumns: "1fr 1.3fr", marginTop: 14 }}>
+                      <TeamProfile rec={activeProfile} name={activeProfile.name} notesKey="notes"
+                        onName={(v) => updProfile(activeProfile.id, { name: v })}
+                        onChange={(patch) => updProfile(activeProfile.id, patch)}
+                        onRemove={() => rmProfile(activeProfile.id)}
+                        membersHint="No members yet, so this team won't appear on attendance lists or in Contacts."
+                        groupControl={
+                          <select value={profileCall(activeProfile).id}
+                            aria-label={`Call for ${activeProfile.name || "this team"}`}
+                            title="Which call this team applied to — changing it moves the team to that group"
+                            onChange={(e) => setProfileCall(activeProfile.id, e.target.value)}
+                            style={{ fontFamily: MONO, fontSize: 11.5, padding: "5px 7px", borderRadius: 8, background: T.surface, maxWidth: 210,
+                                     border: `1px solid ${profileCall(activeProfile).accent}`, color: profileCall(activeProfile).accent, fontWeight: 600 }}>
+                            {callList.map((c) => <option key={c.id} value={c.id}>{c.name}{c.topic ? ` — ${c.topic}` : ""}</option>)}
+                            {profileCall(activeProfile).id === UNASSIGNED && <option value={UNASSIGNED}>Unassigned</option>}
+                          </select>
+                        }
+                        funding={
+                          <FundingBlock grantedLabel="Seed budget" granted={budgetOf(activeProfile)}
+                            usedLabel="Spent so far" used={spentOf(activeProfile)}
+                            footnote="drawn from the team's Financial Services account"
+                            grantedInput={
+                              <span className="moneyfield"><span className="cur">$</span>
+                                <EInput value={activeProfile.budget} mono w="86px" placeholder="0" ariaLabel="Seed-year budget"
+                                  onChange={(v) => updProfile(activeProfile.id, { budget: money(v) })} />
+                              </span>
+                            }
+                            usedInput={
+                              <span className={"moneyfield" + (budgetOf(activeProfile) > 0 && spentOf(activeProfile) === 0 ? " empty" : "")}
+                                title={budgetOf(activeProfile) > 0 && spentOf(activeProfile) === 0 ? "Nothing recorded as spent yet" : undefined}>
+                                <span className="cur">$</span>
+                                <EInput value={activeProfile.spent} mono w="86px" placeholder="0" ariaLabel="Spent so far"
+                                  onChange={(v) => updProfile(activeProfile.id, { spent: money(v) })} />
+                              </span>
+                            } />
+                        } />
+                      <div style={{ display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
+                        <DeliverablesCard items={activeProfile.deliverables}
+                          onAdd={(blank) => addSub(activeProfile.id, "deliverables", blank)}
+                          onUpd={(id, patch) => updSub(activeProfile.id, "deliverables", id, patch)}
+                          onRm={(id) => rmSub(activeProfile.id, "deliverables", id)} />
+                        <CheckinsCard rec={activeProfile}
+                          onAdd={(blank) => addSub(activeProfile.id, "meetings", blank)}
+                          onUpd={(id, patch) => updSub(activeProfile.id, "meetings", id, patch)}
+                          onRm={(id) => rmSub(activeProfile.id, "meetings", id)} />
+                      </div>
+                    </div>
                   )}
                 </>
               )}
@@ -3124,17 +2844,13 @@ export default function App() {
 
           {view === "planning" && (
             <>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
-                <div>
-                  <div className="h1 disp">Planning & critical dates</div>
-                  <div className="sub">The year's milestones — and an owned checklist for every event, from Kickoff to Demo Day.</div>
-                </div>
-              </div>
+              <PageHead title="Planning & critical dates"
+                sub="The year's milestones — and an owned checklist for every event, from Kickoff to Demo Day." />
 
               <div className="card" style={{ marginTop: 20 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                   <div className="eyebrow">Program year · critical dates</div>
-                  <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={() => setEvDraft((d) => ({ open: !d.open, m: "Sep", label: "", color: PALETTE[2].hex, idx: null }))}>
+                  <button className="btn ghost sm" onClick={() => setEvDraft((d) => ({ open: !d.open, m: "Sep", label: "", color: PALETTE[2].hex, idx: null }))}>
                     <Plus size={14} /> Add date
                   </button>
                 </div>
@@ -3175,10 +2891,10 @@ export default function App() {
                         {evs.map((e, k) => {
                           const bg = e.color ? e.color : e.key ? accent : e.label === "Homecoming" ? T.gold : T.muted;
                           return (
-                            <div key={e.rid || `${m}-${k}`} className="evt" title={`${e.label} — click to edit`} style={{ background: bg, cursor: "pointer" }}
+                            <button key={e.rid || `${m}-${k}`} className="evt" title={`${e.label} — click to edit`} style={{ background: bg, color: inkOn(bg) }}
                               onClick={() => { const idx = events.indexOf(e); setEvDraft({ open: true, m: e.m, label: e.label, color: bg, idx }); }}>
                               {e.label}
-                            </div>
+                            </button>
                           );
                         })}
                       </div>
@@ -3252,11 +2968,11 @@ export default function App() {
                 <div className="card" style={{ alignSelf: "flex-start" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
                     <div className="eyebrow">Road to Demo Day</div>
-                    <button className="btn ghost" style={{ fontSize: 11.5, padding: "5px 10px" }} onClick={addRoad}><Plus size={13} /> Team</button>
+                    <button className="btn ghost sm" onClick={addRoad}><Plus size={13} /> Team</button>
                   </div>
                   <div style={{ color: T.muted, fontSize: 12.5, marginBottom: 8 }}>Edit names and dates seen. Click the status to cycle.</div>
                   {road.map((t, i) => {
-                    const meta = t.status === "ready" ? { c: T.ok, l: "Ready" } : t.status === "progress" ? { c: T.warn, l: "In progress" } : { c: T.muted, l: "Not started" };
+                    const meta = t.status === "ready" ? { c: T.ok, l: "Ready" } : t.status === "progress" ? { c: T.warnInk, l: "In progress" } : { c: T.muted, l: "Not started" };
                     return (
                       <div key={t.rid || `road-${i}`} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "9px 0", borderBottom: i === road.length - 1 ? "none" : `1px solid ${T.hairline}` }}>
                         <div style={{ flex: 1, minWidth: 0 }}>
@@ -3271,7 +2987,8 @@ export default function App() {
                             placeholder="Rehearsal feedback — what to fix before the next run"
                             minRows={1} style={{ marginTop: 6, fontSize: 12.5 }} />
                         </div>
-                        <button className="mini" onClick={() => cycleRoad(i)} style={{ borderColor: meta.c, color: meta.c, whiteSpace: "nowrap", marginTop: 2 }}>{meta.l}</button>
+                        <button className="mini" onClick={() => cycleRoad(i)} title="Click to change the status"
+                          style={{ borderColor: meta.c, color: meta.c, whiteSpace: "nowrap", marginTop: 2, minWidth: 92, textAlign: "center" }}>{meta.l}</button>
                         <IconBtn title="Remove team" style={{ marginTop: 4 }} onClick={() => rmRoad(i)}><Trash2 size={13} /></IconBtn>
                       </div>
                     );
@@ -3283,15 +3000,15 @@ export default function App() {
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 6 }}>
                   <div>
                     <div className="eyebrow">Demo Day results · cycle {viewedCycle.label}</div>
-                    <div style={{ color: T.muted, fontSize: 12.5, marginTop: 3 }}>Record each team's pitch, awards and Phase 2 funding — then publish the cohort into the success library.</div>
+                    <div style={{ color: T.muted, fontSize: 12.5, marginTop: 3 }}>Record each team's pitch, awards and Phase II funding — then publish the cohort into the success library.</div>
                   </div>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     {missingResults.length > 0 && (
-                      <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={addMissingResults}>
+                      <button className="btn ghost sm" onClick={addMissingResults}>
                         <Plus size={13} /> Add {missingResults.length} selected team{missingResults.length === 1 ? "" : "s"}
                       </button>
                     )}
-                    <button className="btn" style={{ fontSize: 12, padding: "6px 14px" }} onClick={publishResults}>
+                    <button className="btn sm" onClick={publishResults}>
                       <Trophy size={13} /> Publish to library
                     </button>
                   </div>
@@ -3306,7 +3023,7 @@ export default function App() {
                       <thead><tr>
                         <th scope="col">Team</th><th scope="col">Pitched</th>
                         <th scope="col">Pitch score /{MAX_SCORE}</th>
-                        <th scope="col">Awards</th><th scope="col">Phase 2</th><th scope="col">Amount /yr</th>
+                        <th scope="col">Awards</th><th scope="col">Phase II</th><th scope="col">Amount /yr</th>
                         <th scope="col">Note</th><th scope="col" aria-label="Remove" />
                       </tr></thead>
                       <tbody>
@@ -3338,7 +3055,7 @@ export default function App() {
                             </td>
                             <td>
                               <button className={"mini" + (r.phase2 ? " on" : "")} onClick={() => updResult(r.id, { phase2: !r.phase2 })}>
-                                {r.phase2 ? "Phase 2" : "—"}
+                                {r.phase2 ? "Phase II" : "—"}
                               </button>
                             </td>
                             <td style={{ minWidth: 96 }}>
@@ -3363,30 +3080,25 @@ export default function App() {
 
           {view === "programming" && (
             <>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
-                <div>
-                  <div className="h1 disp">Programming · Sep → Mar</div>
-                  <div className="sub">The presentation series and monthly check-ins that lead each cohort to Demo Day. Tick a session once it's held.</div>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <PageHead title="Programming · Sep → Mar"
+                sub="The presentation series that leads each cohort to Demo Day, and who came. Tick a session once it's held." />
+              <TabRow right={progTab === "sessions" ? (
+                <>
+                  <span className="mono" style={{ fontSize: 12, color: T.muted }}>{sessions.filter((s) => s.done).length}/{sessions.length} held</span>
+                  <button className="btn ghost sm" onClick={printCalendar} title="Open a printable Calendar of Activities">
+                    <Download size={14} /> Print calendar
+                  </button>
+                </>
+              ) : (
+                <button className="btn ghost sm" onClick={printAttendanceGrid} title="Print the full attendance record">
+                  <Download size={14} /> Print full record
+                </button>
+              )}>
                   <div className="tabs">
                     <button className={progTab === "sessions" ? "on" : ""} onClick={() => setProgTab("sessions")}>Sessions</button>
                     <button className={progTab === "attendance" ? "on" : ""} onClick={() => setProgTab("attendance")}>Attendance</button>
                   </div>
-                  {progTab === "sessions" ? (
-                    <>
-                      <span className="mono" style={{ fontSize: 12, color: T.muted }}>{sessions.filter((s) => s.done).length}/{sessions.length} held</span>
-                      <button className="btn ghost" style={{ fontSize: 12, padding: "7px 13px" }} onClick={printCalendar} title="Open a printable Calendar of Activities">
-                        <Download size={14} /> Print calendar
-                      </button>
-                    </>
-                  ) : (
-                    <button className="btn ghost" style={{ fontSize: 12, padding: "7px 13px" }} onClick={printAttendanceGrid} title="Print the full attendance record">
-                      <Download size={14} /> Print full record
-                    </button>
-                  )}
-                </div>
-              </div>
+              </TabRow>
 
               {progTab === "sessions" && (<>
               <div className="card" style={{ marginTop: 20 }}>
@@ -3484,7 +3196,7 @@ export default function App() {
                           <div style={{ fontSize: 13.5, fontWeight: 600 }}>{t.name || "Untitled"}</div>
                           <div style={{ fontSize: 12, color: T.muted }}>Selected, but not set up as a Phase I team yet</div>
                         </div>
-                        <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={() => setUpTeam(t)}>
+                        <button className="btn ghost sm" onClick={() => setUpTeam(t)}>
                           <Plus size={13} /> Add to Phase I
                         </button>
                       </div>
@@ -3495,7 +3207,7 @@ export default function App() {
                           <div style={{ fontSize: 13.5, fontWeight: 600 }}>{p.name || "Untitled"}</div>
                           <div style={{ fontSize: 12, color: T.muted }}>No members listed</div>
                         </div>
-                        <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={() => openAddMembers(p.id)}>
+                        <button className="btn ghost sm" onClick={() => openAddMembers(p.id)}>
                           <Users size={13} /> Add members
                         </button>
                       </div>
@@ -3547,7 +3259,7 @@ export default function App() {
                           </div>
                           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                             <button className="mini" onClick={() => markAllPresent(cur.sid)} disabled={!roster.length}>Mark all present</button>
-                            <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={() => printSignIn(cur)}>
+                            <button className="btn ghost sm" onClick={() => printSignIn(cur)}>
                               <Download size={13} /> Sign-in sheet
                             </button>
                           </div>
@@ -3559,7 +3271,7 @@ export default function App() {
                           return (
                             <div key={t.id} id={`att-team-${t.id}`} style={{ marginTop: 14, scrollMarginTop: 80 }}>
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
-                                <div className="eyebrow">{t.name}{t.withdrawn ? " · withdrawn" : ""}</div>
+                                <div className="eyebrow">{t.name}{t.withdrawn ? ` · ${t.state}` : ""}</div>
                                 {t.people.length > 0 && <span className="mono" style={{ fontSize: 10.5, color: T.muted }}>{here}/{t.people.length} present</span>}
                               </div>
                               {t.people.length === 0 && (
@@ -3604,26 +3316,25 @@ export default function App() {
 
           {view === "knowledge" && (
             <>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
-                <div>
-                  <div className="h1 disp">Knowledge base</div>
-                  <div className="sub">The team's answer sheet — rules, applicant FAQ, and ready-to-send email templates. Entries marked draft need Pascal's confirmation before quoting.</div>
-                </div>
+              <PageHead title="Knowledge base"
+                sub="The team's answer sheet — rules, applicant FAQ, and ready-to-send email templates. Entries marked draft need Pascal's confirmation before quoting." />
+              <TabRow right={
+                <button className="btn ghost sm" onClick={() => { addKb(kbTab); }}>
+                  <Plus size={13} /> Add entry
+                </button>
+              }>
                 <div className="tabs">
                   <button className={kbTab === "rules" ? "on" : ""} onClick={() => setKbTab("rules")}>Rules & eligibility</button>
                   <button className={kbTab === "faq" ? "on" : ""} onClick={() => setKbTab("faq")}>FAQ</button>
                   <button className={kbTab === "templates" ? "on" : ""} onClick={() => setKbTab("templates")}>Templates</button>
                 </div>
-              </div>
+              </TabRow>
 
               <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 16, flexWrap: "wrap" }}>
                 <div className="search">
                   <Search size={15} style={{ color: T.muted }} />
-                  <input placeholder="Search this tab…" value={kbQuery} onChange={(e) => setKbQuery(e.target.value)} />
+                  <input placeholder="Search this tab…" value={kbQuery} onChange={(e) => setKbQuery(e.target.value)} aria-label="Search the knowledge base" />
                 </div>
-                <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={() => { addKb(kbTab); }}>
-                  <Plus size={13} /> Add entry
-                </button>
               </div>
 
               {(() => {
@@ -3682,16 +3393,14 @@ export default function App() {
 
           {view === "cohorts" && (
             <>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
-                <div>
-                  <div className="h1 disp">Cohorts</div>
-                  <div className="sub">Every team we've backed — their wins, Phase II runs and traction — ready to promote. Plus who's coming to Homecoming.</div>
-                </div>
+              <PageHead title="Cohorts"
+                sub="Every team we've backed — their wins, Phase II runs and traction — ready to promote. Plus who's coming to Homecoming." />
+              <TabRow>
                 <div className="tabs">
                   <button className={cohortsTab === "success" ? "on" : ""} onClick={() => setCohortsTab("success")}>Success stories</button>
                   <button className={cohortsTab === "homecoming" ? "on" : ""} onClick={() => setCohortsTab("homecoming")}>Homecoming</button>
                 </div>
-              </div>
+              </TabRow>
 
               {cohortsTab === "success" ? (
                 <>
@@ -3703,7 +3412,7 @@ export default function App() {
                     <button className={"chip" + (cohortFilter === "phase2" ? " on" : "")} onClick={() => setCohortFilter("phase2")}>Phase II only</button>
                     <div className="search" style={{ marginLeft: "auto" }}>
                       <Search size={15} style={{ color: T.muted }} />
-                      <input placeholder="Search teams…" value={query} onChange={(e) => setQuery(e.target.value)} />
+                      <input placeholder="Search teams…" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search past teams" />
                     </div>
                   </div>
 
@@ -3719,7 +3428,7 @@ export default function App() {
                       <div style={{ fontWeight: 600, fontSize: 13 }}>Bulk-add past teams</div>
                       <div style={{ color: T.muted, fontSize: 11.5 }}>CSV or Excel. We map name, description, cohort, year, awards, Phase II and note. New cohorts are created automatically.</div>
                     </div>
-                    <span className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }}>Browse</span>
+                    <span className="btn ghost sm">Browse</span>
                     <input type="file" accept=".csv,.xlsx,.xls" style={{ display: "none" }} onChange={(e) => onCohortFile(e.target.files[0])} />
                   </label>
                   {cohortMsg && <div style={{ fontSize: 12, color: T.ok, marginTop: 8 }}>{cohortMsg}</div>}
@@ -3745,7 +3454,7 @@ export default function App() {
                           <div className="scards">
                             {visible.map(({ t, ti }) => (
                               editTeam === t.rid && t.rid ? (
-                                <TeamEditCard key={t.rid} t={t} awards={AWARDS} funded={isFunded(t)}
+                                <TeamEditCard key={t.rid} t={t} awards={AWARDS} funded={hasPhase2Award(t)}
                                   onChange={(patch) => updTeam(ci, ti, patch)}
                                   onToggleAward={(a) => toggleAward(ci, ti, a)}
                                   onDone={() => setEditTeam(null)}
@@ -3774,7 +3483,7 @@ export default function App() {
                   </div>
                   <div className="card" style={{ padding: 0, overflow: "hidden" }}>
                     <div style={{ display: "flex", justifyContent: "flex-end", padding: "10px 12px 0" }}>
-                      <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={addAlum}><Plus size={14} /> Add team</button>
+                      <button className="btn ghost sm" onClick={addAlum}><Plus size={14} /> Add team</button>
                     </div>
                     <table>
                       <thead><tr><th>Team</th><th>Cohort year</th><th>Contact</th><th>RSVP</th><th></th></tr></thead>
@@ -3810,170 +3519,111 @@ export default function App() {
 
           {view === "phase2" && (
             <>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
-                <div>
-                  <div className="h1 disp">Phase II teams · funded</div>
-                  <div className="sub">The Maturation-year teams — up to $50,000 a year, paid in tranches. Record each award, its disbursement, and the support meetings held.</div>
-                </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {missingP2.length > 0 && (
-                    <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={pullP2FromResults}>
-                      <Plus size={13} /> Add {missingP2.length} from Demo Day
-                    </button>
-                  )}
-                  <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={addP2}><Plus size={13} /> Add team</button>
-                </div>
-              </div>
+              <PageHead title="Phase II teams · all cohorts"
+                sub="The maturation year — up to $50,000 a year, paid in tranches: each team's profile, award and payments, documents, deliverables and check-ins." />
+              <PhaseTabs tab={p2Tab} onTab={setP2Tab} owed={p2Owed} onAdd={addP2} />
+              <GroupChips allLabel="All cohorts" allCount={p2Teams.length} value={p2Filter} onChange={setP2CohortFilter}
+                groups={p2Cohorts.map((c) => ({ id: c, label: c, accent: T.burgundy, count: p2Teams.filter((p) => p2CohortOf(p) === c).length }))} />
+              {missingP2.length > 0 && (
+                <Handoff
+                  text={`${missingP2.length} team${missingP2.length === 1 ? " was" : "s were"} awarded Phase II at Demo Day ${viewedCycle.label} but ${missingP2.length === 1 ? "isn't" : "aren't"} here yet. Members, supervisor and mentor come across from Phase I.`}
+                  action={`Add ${missingP2.length === 1 ? "it" : "them"}`} onClick={pullP2FromResults} />
+              )}
 
-              {(() => {
-                const totAwarded = phase2.reduce((s, p) => s + (Number(p.awarded) || 0), 0);
-                const totPaid = phase2.reduce((s, p) => s + p2Paid(p), 0);
+              {p2Tab === "contacts" ? (
+                <ContactsTab rows={p2ContactRows} groupLabel="Cohort"
+                  onPrint={(rows) => printContacts(rows, "Phase II")}
+                  emptyText="No contacts in this view. People come from the Members field on each Phase II team — one per line, name and email." />
+              ) : p2Tab === "deliverables" ? (
+                <DeliverablesTab teams={visibleP2} summary={shownP2Owed}
+                  scopeNote={p2Filter !== "all" ? p2Filter : ""} elsewhere={p2Owed.outstanding}
+                  onSubmit={(pid, id) => updP2Sub(pid, "deliverables", id, { status: "submitted" })}
+                  onOpen={(pid) => { setActiveP2Id(pid); setP2CohortFilter("all"); setP2Tab("profiles"); }}
+                  onAssign={assignP2} />
+              ) : p2Teams.length === 0 ? (
+                <div className="card" style={{ marginTop: 16, color: T.muted, fontSize: 13.5 }}>
+                  No Phase II teams yet. They come from the teams awarded Phase II at Demo Day, or add one with “Add team”.
+                </div>
+              ) : (() => {
+                const funded = visibleP2.filter(isFunded);
+                const totAwarded = funded.reduce((s, p) => s + (Number(p.awarded) || 0), 0);
+                const totPaid = funded.reduce((s, p) => s + p2Paid(p), 0);
+                const toPay = visibleP2.filter(isRunning).reduce((s, p) => s + Math.max((Number(p.awarded) || 0) - p2Paid(p), 0), 0);
+                const scope = p2Filter !== "all" ? ` in ${p2Filter}` : "";
                 return (
-                  <div className="grid resp" style={{ gridTemplateColumns: "repeat(3,1fr)", marginTop: 18, gap: 12 }}>
-                    <Stat n={phase2.filter((p) => p.status === "active").length} l="Active Phase II teams" accent={accent} />
-                    <Stat n={`$${totPaid.toLocaleString()}`} l="Disbursed to date" accent={accent} />
-                    <Stat n={`$${Math.max(totAwarded - totPaid, 0).toLocaleString()}`} l="Committed, not yet paid" accent={accent} />
-                  </div>
+                  <>
+                    <div className="grid resp4" style={{ gridTemplateColumns: "repeat(4,minmax(0,1fr))", marginTop: 16, gap: 12 }}>
+                      <Stat n={visibleP2.filter(isRunning).length} l={`Teams running${scope}`} accent={accent} />
+                      <Stat n={`$${totAwarded.toLocaleString()}`} l={`Awarded · ${funded.filter((p) => Number(p.awarded) > 0).length} team${funded.filter((p) => Number(p.awarded) > 0).length === 1 ? "" : "s"}`} accent={accent} />
+                      <Stat n={`$${totPaid.toLocaleString()}`} l="Paid out so far" accent={accent} />
+                      <Stat n={`$${toPay.toLocaleString()}`} l="Still to pay running teams" accent={accent} />
+                    </div>
+
+                    <TeamPicker activeId={activeP2 && activeP2.id} onPick={setActiveP2Id}
+                      moneyOf={(p) => ({ granted: Number(p.awarded) || 0, used: p2Paid(p) })}
+                      groups={(p2Filter === "all" ? p2Cohorts : [p2Filter]).map((c) => ({
+                        id: c, label: c, accent: T.burgundy, teams: p2Teams.filter((p) => p2CohortOf(p) === c),
+                      }))} />
+
+                    {activeP2 && (() => {
+                      const paid = p2Paid(activeP2);
+                      const payN = (activeP2.payments || []).length;
+                      const blankPays = (activeP2.payments || []).filter((x) => !(Number(x.amount) > 0)).length;
+                      const awarded = Number(activeP2.awarded) || 0;
+                      return (
+                        <div className="grid resp" style={{ gridTemplateColumns: "1fr 1.3fr", marginTop: 14 }}>
+                          <TeamProfile rec={activeP2} name={activeP2.team} notesKey="note"
+                            onName={(v) => updP2(activeP2.id, { team: v })}
+                            onChange={(patch) => updP2(activeP2.id, patch)}
+                            onRemove={() => rmP2(activeP2.id)}
+                            origin={activeP2.fromCycle ? `Came from Phase I · cycle ${activeP2.fromCycle}` : null}
+                            membersHint="No members yet, so nobody on this team appears in Contacts."
+                            groupControl={
+                              <span title="Which cohort this team belongs to" style={{ border: `1px solid ${T.burgundy}`, borderRadius: 8, display: "inline-flex" }}>
+                                <EInput value={activeP2.cohort} onChange={(v) => updP2(activeP2.id, { cohort: v })} placeholder="Cohort" mono w="104px" ariaLabel="Cohort" />
+                              </span>
+                            }
+                            funding={
+                              <FundingBlock grantedLabel="Award ($/yr)" granted={awarded}
+                                usedLabel="Paid out" used={paid}
+                                warning={awarded > MAX_AWARD ? `above the $${MAX_AWARD.toLocaleString()}/yr maximum` : null}
+                                footnote={!payN
+                                  ? "no payments recorded yet — add one under Payments"
+                                  : blankPays
+                                    ? `${blankPays} of ${payN} payment${payN === 1 ? "" : "s"} has no amount — type it in the $ box`
+                                    : `total of ${payN} payment${payN === 1 ? "" : "s"} under Payments`}
+                                grantedInput={
+                                  <span className="moneyfield"><span className="cur">$</span>
+                                    <EInput value={activeP2.awarded} onChange={(v) => updP2(activeP2.id, { awarded: money(v) })} placeholder="0" mono w="86px" ariaLabel="Award amount" />
+                                  </span>
+                                }
+                                usedInput={
+                                  <span className="mono" title="The total of the payments recorded — change it under Payments"
+                                    style={{ display: "inline-block", fontSize: 13, padding: "6px 2px", color: awarded > 0 && paid >= awarded ? T.ok : T.ink }}>
+                                    ${paid.toLocaleString()}
+                                  </span>
+                                } />
+                            } />
+                          <div style={{ display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
+                            <DeliverablesCard items={activeP2.deliverables}
+                              onAdd={(blank) => addP2Sub(activeP2.id, "deliverables", blank)}
+                              onUpd={(id, patch) => updP2Sub(activeP2.id, "deliverables", id, patch)}
+                              onRm={(id) => rmP2Sub(activeP2.id, "deliverables", id)} />
+                            <CheckinsCard rec={activeP2}
+                              onAdd={(blank) => addP2Sub(activeP2.id, "meetings", blank)}
+                              onUpd={(id, patch) => updP2Sub(activeP2.id, "meetings", id, patch)}
+                              onRm={(id) => rmP2Sub(activeP2.id, "meetings", id)} />
+                            <PaymentsCard rec={activeP2}
+                              onAdd={(blank) => addP2Sub(activeP2.id, "payments", blank)}
+                              onUpd={(id, patch) => updP2Sub(activeP2.id, "payments", id, patch)}
+                              onRm={(id) => rmP2Sub(activeP2.id, "payments", id)} />
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </>
                 );
               })()}
-
-              {phase2.length === 0 ? (
-                <div className="card" style={{ marginTop: 16, color: T.muted, fontSize: 13.5 }}>
-                  No Phase II teams yet. Pull them in from a cycle's Demo Day results, or add one manually.
-                </div>
-              ) : (
-                <>
-                  <div className="chiprow" style={{ marginTop: 18 }}>
-                    {[...phase2].sort((a, b) => (a.cohort || "").localeCompare(b.cohort || "") || (a.team || "").localeCompare(b.team || "")).map((p) => {
-                      const paid = p2Paid(p);
-                      const full = Number(p.awarded) > 0 && paid >= Number(p.awarded);
-                      return (
-                        <button key={p.id} title={p.team || "Untitled"} className={"chip" + (activeP2 && activeP2.id === p.id ? " on" : "")} onClick={() => setActiveP2Id(p.id)} style={{ maxWidth: 260 }}>
-                          {p.team || "Untitled"}
-                          <span className="mono" style={{
-                            fontSize: 10, marginLeft: 6,
-                            color: activeP2 && activeP2.id === p.id ? "#fff" : full ? T.ok : T.muted,
-                            opacity: activeP2 && activeP2.id === p.id ? 0.9 : 1,
-                          }}>
-                            {full ? "paid" : `$${paid.toLocaleString()}/${Number(p.awarded) ? "$" + Number(p.awarded).toLocaleString() : "—"}`}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  {activeP2 && (() => {
-                    const paid = p2Paid(activeP2);
-                    const payN = (activeP2.payments || []).length;
-                    const blankPays = (activeP2.payments || []).filter((x) => !(Number(x.amount) > 0)).length;
-                    const awarded = Number(activeP2.awarded) || 0;
-                    const pct = awarded ? Math.min(Math.round((paid / awarded) * 100), 100) : 0;
-                    const remaining = Math.max(awarded - paid, 0);
-                    return (
-                      <div className="grid resp" style={{ gridTemplateColumns: "1fr 1.25fr", marginTop: 14 }}>
-                        <div className="card">
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                            <div className="eyebrow">Team</div>
-                            <IconBtn onClick={() => rmP2(activeP2.id)} title="Remove from tracking"><Trash2 size={14} /></IconBtn>
-                          </div>
-                          <EInput value={activeP2.team} onChange={(v) => updP2(activeP2.id, { team: v })} placeholder="Team name" />
-                          <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 8, marginTop: 10 }}>
-                            <div><div className="eyebrow" style={{ marginBottom: 3 }}>Cohort</div><EInput value={activeP2.cohort} onChange={(v) => updP2(activeP2.id, { cohort: v })} placeholder="Cohort 7" /></div>
-                            <div>
-                              <div className="eyebrow" style={{ marginBottom: 3 }}>Status</div>
-                              <button className={"mini" + (activeP2.status === "completed" ? " on" : "")}
-                                style={activeP2.status === "completed" ? { borderColor: T.ok, color: T.ok, background: T.surface } : {}}
-                                onClick={() => updP2(activeP2.id, { status: activeP2.status === "completed" ? "active" : "completed" })}>
-                                {activeP2.status === "completed" ? "Completed" : "Active"}
-                              </button>
-                            </div>
-                          </div>
-                          <div className="eyebrow" style={{ margin: "12px 0 3px" }}>Award ($/yr)</div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                            <span className="moneyfield">
-                              <span className="cur">$</span>
-                              <EInput value={activeP2.awarded} onChange={(v) => updP2(activeP2.id, { awarded: money(v) })} placeholder="0" mono w="86px" ariaLabel="Award amount" />
-                            </span>
-                            {awarded > MAX_AWARD && (
-                              <span style={{ fontSize: 11.5, color: T.warnInk }}>
-                                above the ${MAX_AWARD.toLocaleString()}/yr maximum
-                              </span>
-                            )}
-                          </div>
-                          <div style={{ marginTop: 14 }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                              <span className="eyebrow">Disbursed</span>
-                              <span className="mono" style={{ fontSize: 12.5, color: remaining === 0 && awarded > 0 ? T.ok : T.ink }}>
-                                ${paid.toLocaleString()}{awarded ? ` of $${awarded.toLocaleString()}` : ""}
-                              </span>
-                            </div>
-                            <div className="track" style={{ marginTop: 7 }}><div style={{ width: pct + "%", background: remaining === 0 && awarded > 0 ? T.ok : accent }} /></div>
-                            {/* This figure is the payment ledger's total, never typed
-                                directly — saying so beats leaving someone clicking
-                                at a number that will not take an edit. */}
-                            <div style={{ color: blankPays ? T.warnInk : T.muted, fontSize: 11.5, marginTop: 5 }}>
-                              {awarded > 0 && (remaining > 0 ? `$${remaining.toLocaleString()} remaining · ` : "Fully disbursed · ")}
-                              {!payN
-                                ? "no payments recorded yet — add one in the ledger to move this"
-                                : blankPays
-                                  ? `${blankPays} of ${payN} payment${payN === 1 ? "" : "s"} has no amount — type it in the $ box, not the note`
-                                  : `total of ${payN} payment${payN === 1 ? "" : "s"} — change it in the ledger`}
-                            </div>
-                          </div>
-                          <div style={{ marginTop: 14 }}>
-                            <TeamDocs rec={activeP2} onChange={(patch) => updP2(activeP2.id, patch)} />
-                          </div>
-                          <div className="eyebrow" style={{ margin: "14px 0 3px" }}>Note</div>
-                          <NoteField value={activeP2.note} onChange={(v) => updP2(activeP2.id, { note: v })}
-                            placeholder="Awards, focus, anything worth remembering" minRows={5} />
-                        </div>
-
-                        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                          <div className="card">
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                              <div className="eyebrow">Payments · {(activeP2.payments || []).length}</div>
-                              <button className="mini" onClick={() => addP2Sub(activeP2.id, "payments", { date: todayISO(), amount: "", note: "" })}><Plus size={11} style={{ verticalAlign: -1 }} /> Payment</button>
-                            </div>
-                            {(activeP2.payments || []).length === 0 && <div style={{ color: T.muted, fontSize: 12.5 }}>No payments recorded yet.</div>}
-                            {(activeP2.payments || []).map((pay) => (
-                              <div key={pay.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "9px 0", borderBottom: `1px solid ${T.hairline}` }}>
-                                <div style={{ flex: "0 0 auto", paddingTop: 1 }}>
-                                  <DateField value={pay.date} onChange={(v) => updP2Sub(activeP2.id, "payments", pay.id, { date: v })} w="126px" title="Payment date" />
-                                </div>
-                                <span className={"moneyfield" + (Number(pay.amount) > 0 ? "" : " empty")}
-                                  title={Number(pay.amount) > 0 ? "Payment amount" : "How much was paid — without it this payment adds nothing to the disbursed total"}>
-                                  <span className="cur">$</span>
-                                  <EInput value={pay.amount} onChange={(v) => updP2Sub(activeP2.id, "payments", pay.id, { amount: money(v) })}
-                                    placeholder="Amount" mono w="76px" ariaLabel="Payment amount" />
-                                </span>
-                                <NoteField value={pay.note} onChange={(v) => updP2Sub(activeP2.id, "payments", pay.id, { note: v })} placeholder="What it covers — tranche, milestone, conditions" minRows={1} />
-                                <IconBtn title="Remove payment" style={{ marginTop: 4 }} onClick={() => rmP2Sub(activeP2.id, "payments", pay.id)}><Trash2 size={13} /></IconBtn>
-                              </div>
-                            ))}
-                          </div>
-
-                          <div className="card">
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                              <div className="eyebrow">Support meetings · {(activeP2.meetings || []).length}</div>
-                              <button className="mini" onClick={() => addP2Sub(activeP2.id, "meetings", { date: todayISO(), note: "" })}><Plus size={11} style={{ verticalAlign: -1 }} /> Meeting</button>
-                            </div>
-                            {(activeP2.meetings || []).length === 0 && <div style={{ color: T.muted, fontSize: 12.5 }}>No meetings logged yet.</div>}
-                            {(activeP2.meetings || []).map((m) => (
-                              <div key={m.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "9px 0", borderBottom: `1px solid ${T.hairline}` }}>
-                                <div style={{ flex: "0 0 auto", paddingTop: 1 }}>
-                                  <DateField value={m.date} onChange={(v) => updP2Sub(activeP2.id, "meetings", m.id, { date: v })} w="126px" title="Meeting date" />
-                                </div>
-                                <NoteField value={m.note} onChange={(v) => updP2Sub(activeP2.id, "meetings", m.id, { note: v })} placeholder="Notes, decisions, action items — as long as you need" minRows={2} />
-                                <IconBtn title="Remove meeting" style={{ marginTop: 4 }} onClick={() => rmP2Sub(activeP2.id, "meetings", m.id)}><Trash2 size={13} /></IconBtn>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })()}
-                </>
-              )}
             </>
           )}
         </div>
@@ -3983,6 +3633,28 @@ export default function App() {
 }
 
 /* ---------- small components ---------- */
+/** The row under a page heading: the page's tabs, and actions for the tab in view. */
+function TabRow({ children, right }) {
+  return (
+    <div className="tabrow">
+      {children}
+      {right && <div className="pageactions">{right}</div>}
+    </div>
+  );
+}
+/** Every page opens the same way: its name, one line on what it is for, and
+    the page-wide actions on the right. */
+function PageHead({ title, sub, actions }) {
+  return (
+    <div className="pagehead">
+      <div style={{ minWidth: 0, flex: "1 1 420px" }}>
+        <h1 className="h1 disp">{title}</h1>
+        {sub && <p className="sub">{sub}</p>}
+      </div>
+      {actions && <div className="pageactions">{actions}</div>}
+    </div>
+  );
+}
 function Stat({ n, l, accent }) {
   return (
     <div className="card stat">
@@ -4019,7 +3691,7 @@ function MemberEditor({ team, onSave, onCancel }) {
       <NoteField value={text} onChange={setText} minRows={3} label={`Members of ${team}`}
         placeholder={"One per line — name, program, email"} />
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
-        <button className="btn" style={{ fontSize: 12, padding: "6px 12px" }} disabled={!n} onClick={() => onSave(text)}>
+        <button className="btn sm" disabled={!n} onClick={() => onSave(text)}>
           {n ? `Add ${n} ${n === 1 ? "person" : "people"}` : "Add people"}
         </button>
         <button className="mini" onClick={onCancel}>Cancel</button>
@@ -4032,7 +3704,7 @@ function Alert({ icon, text, cta, onClick, accent, last, tone }) {
     <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 0", borderBottom: last ? "none" : `1px solid ${T.hairline}` }}>
       <span style={{ color: tone || accent, display: "grid", placeItems: "center", width: 30, height: 30, borderRadius: 9, background: tone ? T.dangerTint : T.paper, flex: "0 0 30px" }}>{icon}</span>
       <span style={{ flex: 1, fontSize: 13.5 }}>{text}</span>
-      <button className="btn ghost" style={{ fontSize: 12, padding: "6px 12px" }} onClick={onClick}>{cta}</button>
+      <button className="btn ghost sm" onClick={onClick}>{cta}</button>
     </div>
   );
 }
@@ -4172,5 +3844,478 @@ function AddCallCard({ draft, setDraft, palette, onAdd }) {
         <button className="btn ghost" onClick={() => setDraft({ open: false, name: "", topic: "", accent: palette[1].hex })}>Cancel</button>
       </div>
     </div>
+  );
+}
+
+/* ============================================================
+   Shared by Phase I and Phase II
+
+   Both phases follow a team through the same steps: who they are, what they
+   were given, the documents on file, what they owe us and how often we meet
+   them. The two pages are built from these same pieces, so a team reads the
+   same in either phase; Phase II adds its payment ledger.
+   ============================================================ */
+
+/** Tabs + the one action every tab shares. */
+function PhaseTabs({ tab, onTab, owed, onAdd }) {
+  return (
+    <TabRow right={<button className="btn ghost sm" onClick={onAdd}><Plus size={13} /> Add team</button>}>
+      <div className="tabs">
+        <button className={tab === "profiles" ? "on" : ""} onClick={() => onTab("profiles")}>Teams</button>
+        <button className={tab === "deliverables" ? "on" : ""} onClick={() => onTab("deliverables")}>
+          Deliverables
+          {owed.outstanding > 0 && (
+            <span className="badge" style={{ marginLeft: 6, background: owed.overdue ? T.danger : T.warnInk }}>{owed.outstanding}</span>
+          )}
+        </button>
+        <button className={tab === "contacts" ? "on" : ""} onClick={() => onTab("contacts")}>Contacts</button>
+      </div>
+    </TabRow>
+  );
+}
+
+/** One filter, shared by every tab: Phase I filters by call, Phase II by cohort. */
+function GroupChips({ allLabel, allCount, groups, value, onChange }) {
+  return (
+    <div className="chiprow" style={{ marginTop: 14 }}>
+      <button className={"chip chipx" + (value === "all" ? " on" : "")} onClick={() => onChange("all")}>
+        <span className="lbl">{allLabel}</span><span className="n">{allCount}</span>
+      </button>
+      {groups.map((g) => (
+        <button key={g.id} title={g.title || g.label}
+          className={"chip chipx" + (value === g.id ? " on" : "")}
+          style={value === g.id
+            ? { background: g.accent, borderColor: g.accent, color: "#fff" }
+            : { borderColor: g.accent, color: g.accent }}
+          onClick={() => onChange(g.id)}>
+          <span className="lbl">{g.label}</span><span className="n">{g.count}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** A tinted strip offering to bring teams in from the step before. */
+function Handoff({ text, action, onClick }) {
+  return (
+    <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", background: T.tint, borderRadius: 12, padding: "10px 14px" }}>
+      <span style={{ fontSize: 13, color: T.burgundy, flex: "1 1 240px" }}>{text}</span>
+      <button className="mini" style={{ borderColor: T.burgundy, color: T.burgundy }} onClick={onClick}>{action}</button>
+    </div>
+  );
+}
+
+/** Team chips, grouped. Each carries what needs chasing without opening it. */
+function TeamPicker({ groups, activeId, onPick, moneyOf }) {
+  return groups.map(({ id, label, accent, teams }) => {
+    if (!teams.length) return null;
+    return (
+      <div key={id} style={{ marginTop: 14 }}>
+        <div className="eyebrow" style={{ marginBottom: 7, color: accent }}>
+          {label} · {teams.length} team{teams.length === 1 ? "" : "s"}
+        </div>
+        <div className="chiprow">
+          {[...teams].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => {
+            const worst = isRunning(p) ? profileDeliverableState(p) : null;
+            const st = statusOf(p);
+            const on = activeId === p.id;
+            const running = isRunning(p);
+            const cin = lastCheckin(p);
+            const m = moneyOf(p);
+            const hint = [p.name || "Untitled", st.id !== "active" ? st.label : null, worst ? worst.label : null,
+              running && cin.stale ? `last check-in: ${cin.label.toLowerCase()}` : null].filter(Boolean).join(" — ");
+            return (
+              <button key={p.id} title={hint}
+                className={"chip" + (on ? " on" : "")} onClick={() => onPick(p.id)}
+                style={on
+                  ? { display: "inline-flex", alignItems: "center", gap: 7, background: accent, borderColor: accent }
+                  : { display: "inline-flex", alignItems: "center", gap: 7, borderColor: accent,
+                      opacity: st.id === "withdrawn" ? 0.55 : 1, textDecoration: st.id === "withdrawn" ? "line-through" : "none" }}>
+                {st.id === "withdrawn" && <Ban size={11} style={{ flex: "0 0 auto", color: on ? "#fff" : T.muted }} />}
+                {st.id === "completed" && <CheckCircle2 size={11} style={{ flex: "0 0 auto", color: on ? "#fff" : T.info }} />}
+                {running && worst && <span style={{ width: 7, height: 7, borderRadius: 999, background: on ? "#fff" : worst.fg, flex: "0 0 7px" }} />}
+                {p.name || "Untitled"}
+                {st.id === "atrisk" && <span className="mono" style={{ fontSize: 9.5, color: on ? "#fff" : st.fg }}>at risk</span>}
+                {m.granted > 0 && (
+                  <span className="mono" style={{ fontSize: 10, color: on ? "#fff" : m.used >= m.granted ? T.ok : T.muted, opacity: on ? 0.9 : 1 }}>
+                    ${m.used.toLocaleString()}/{`$${m.granted.toLocaleString()}`}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  });
+}
+
+/** Who the team is. The same fields, in the same order, in both phases. */
+function TeamProfile({ rec, name, onName, notesKey, onChange, groupControl, onRemove, origin, funding, membersHint }) {
+  const st = statusOf(rec);
+  return (
+    <div className="card">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <div className="eyebrow">Profile</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          {groupControl}
+          <IconBtn title="Remove team" onClick={onRemove}><Trash2 size={14} /></IconBtn>
+        </div>
+      </div>
+      <EInput value={name} onChange={onName} placeholder="Team name" ariaLabel="Team name" />
+      {origin && <div className="mono" style={{ fontSize: 11, color: T.muted, margin: "2px 0 0 9px" }}>{origin}</div>}
+      <div className="eyebrow" style={{ margin: "12px 0 3px" }}>Members</div>
+      <NoteField value={rec.members} onChange={(v) => onChange({ members: v })}
+        placeholder={"One per line — name, program, email"} minRows={3} label="Members" />
+      {isRunning(rec) && !parseMembers(rec.members).length && (
+        <div style={{ fontSize: 12, color: T.warnInk, marginTop: 4 }}>{membersHint}</div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 8, marginTop: 10 }}>
+        <div><div className="eyebrow" style={{ marginBottom: 3 }}>Department</div><EInput value={rec.dept} onChange={(v) => onChange({ dept: v })} placeholder="e.g. MIE" ariaLabel="Department" /></div>
+        <div><div className="eyebrow" style={{ marginBottom: 3 }}>Supervisor</div><EInput value={rec.supervisor} onChange={(v) => onChange({ supervisor: v })} placeholder="Professor" ariaLabel="Supervisor" /></div>
+        <div><div className="eyebrow" style={{ marginBottom: 3 }}>Mentor</div><EInput value={rec.mentor} onChange={(v) => onChange({ mentor: v })} placeholder="Assigned mentor" ariaLabel="Mentor" /></div>
+        <div>
+          <div className="eyebrow" style={{ marginBottom: 3 }}>Status</div>
+          <select value={st.id} aria-label="Team status" onChange={(e) => onChange({ status: e.target.value })}
+            style={{ fontFamily: MONO, fontSize: 11.5, padding: "5px 7px", borderRadius: 8, background: T.surface, fontWeight: 600, maxWidth: "100%",
+                     border: `1px solid ${st.fg}`, color: st.fg }}>
+            {TEAM_STATUS.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+          </select>
+        </div>
+        <div>
+          <div className="eyebrow" style={{ marginBottom: 3 }}>Finance account</div>
+          <button className={"mini" + (rec.finance === "opened" ? " on" : "")}
+            style={rec.finance === "opened" ? { borderColor: T.ok, color: T.ok, background: T.surface } : {}}
+            onClick={() => onChange({ finance: rec.finance === "opened" ? "pending" : "opened" })}>
+            {rec.finance === "opened" ? <><Check size={11} style={{ verticalAlign: -1 }} /> Opened</> : "Pending"}
+          </button>
+        </div>
+      </div>
+      {funding}
+      <div style={{ marginTop: 14 }}>
+        <TeamDocs rec={rec} onChange={onChange} />
+      </div>
+      <div className="eyebrow" style={{ margin: "14px 0 3px" }}>Notes</div>
+      <NoteField value={rec[notesKey]} onChange={(v) => onChange({ [notesKey]: v })} label="Notes"
+        placeholder="Anything worth remembering — context, risks, decisions, who said what. Grows as you type." minRows={5} />
+    </div>
+  );
+}
+
+/** What the team was given and what has gone out, laid out the same in both phases. */
+function FundingBlock({ grantedLabel, granted, grantedInput, usedLabel, used, usedInput, footnote, warning }) {
+  const over = Math.max(used - granted, 0);
+  const left = Math.max(granted - used, 0);
+  const pct = granted ? Math.min(Math.round((used / granted) * 100), 100) : 0;
+  return (
+    <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${T.hairline}` }}>
+      <div style={{ display: "flex", gap: 18, flexWrap: "wrap", alignItems: "flex-end" }}>
+        <div><div className="eyebrow" style={{ marginBottom: 3 }}>{grantedLabel}</div>{grantedInput}</div>
+        <div><div className="eyebrow" style={{ marginBottom: 3 }}>{usedLabel}</div>{usedInput}</div>
+        {warning && <span style={{ fontSize: 11.5, color: T.warnInk, paddingBottom: 6 }}>{warning}</span>}
+      </div>
+      {granted > 0 && (
+        <div className="track" style={{ marginTop: 11 }}>
+          <div style={{ width: pct + "%", background: over > 0 ? T.danger : left === 0 ? T.ok : "var(--accent)" }} />
+        </div>
+      )}
+      <div style={{ fontSize: 11.5, marginTop: 5, color: over > 0 ? T.danger : T.muted }}>
+        {granted > 0 && (over > 0
+          ? `$${over.toLocaleString()} over · `
+          : left > 0 ? `$${left.toLocaleString()} of $${granted.toLocaleString()} remaining · ` : "All of it · ")}
+        {footnote}
+      </div>
+    </div>
+  );
+}
+
+/** What the team owes us. */
+function DeliverablesCard({ items, onAdd, onUpd, onRm }) {
+  const list = items || [];
+  return (
+    <div className="card">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, gap: 10, flexWrap: "wrap" }}>
+        <div className="eyebrow">Deliverables · {list.filter((d) => d.status === "submitted").length}/{list.length} submitted</div>
+        <button className="mini" onClick={() => onAdd({ title: "", due: "", status: "pending", note: "" })}><Plus size={11} style={{ verticalAlign: -1 }} /> Deliverable</button>
+      </div>
+      {list.length === 0 && <div style={{ color: T.muted, fontSize: 12.5 }}>Nothing due yet. Add one here, or give every team the same one from the Deliverables tab.</div>}
+      {list.map((d) => {
+        const st = deliverableState(d);
+        const submitted = d.status === "submitted";
+        return (
+          <div key={d.id} style={{ padding: "10px 0", borderBottom: `1px solid ${T.hairline}` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ flex: 1, minWidth: 150 }}>
+                <EInput value={d.title} onChange={(v) => onUpd(d.id, { title: v })} placeholder="What they owe us" ariaLabel="Deliverable" />
+              </span>
+              <DateField value={d.due} onChange={(v) => onUpd(d.id, { due: v })} title="Due date" />
+              <button className="mini" title={submitted ? "Mark as still outstanding" : "Mark as submitted"}
+                onClick={() => onUpd(d.id, { status: submitted ? "pending" : "submitted" })}
+                style={{ borderColor: st.fg, color: submitted ? "#fff" : st.fg, background: submitted ? T.ok : T.surface, whiteSpace: "nowrap" }}>
+                {submitted ? <><Check size={11} style={{ verticalAlign: -1, marginRight: 3 }} />Submitted</> : st.label}
+              </button>
+              <IconBtn title="Remove deliverable" onClick={() => onRm(d.id)}><Trash2 size={13} /></IconBtn>
+            </div>
+            <NoteField value={d.note} onChange={(v) => onUpd(d.id, { note: v })}
+              placeholder="Notes — what exactly is expected, what's been chased, what's missing" minRows={1}
+              style={{ marginTop: 7, fontSize: 12.5 }} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Check-in meetings, with how long it has been since the last one. */
+function CheckinsCard({ rec, onAdd, onUpd, onRm }) {
+  const list = rec.meetings || [];
+  const cin = lastCheckin(rec);
+  return (
+    <div className="card">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, gap: 10, flexWrap: "wrap" }}>
+        <div className="eyebrow">Check-ins · {list.length}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {isRunning(rec) && (
+            <span className="mono" style={{ fontSize: 10.5, color: cin.stale ? T.warnInk : T.muted }}
+              title={cin.stale ? `More than ${CHECKIN_DAYS} days without a check-in` : undefined}>
+              last: {cin.label.toLowerCase()}
+            </span>
+          )}
+          <button className="mini" onClick={() => onAdd({ date: todayISO(), note: "" })}><Plus size={11} style={{ verticalAlign: -1 }} /> Check-in</button>
+        </div>
+      </div>
+      {list.length === 0 && <div style={{ color: T.muted, fontSize: 12.5 }}>No check-ins logged yet.</div>}
+      {list.map((m) => (
+        <div key={m.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "9px 0", borderBottom: `1px solid ${T.hairline}` }}>
+          <div style={{ flex: "0 0 auto", paddingTop: 1 }}>
+            <DateField value={m.date} onChange={(v) => onUpd(m.id, { date: v })} w="126px" title="Check-in date" />
+          </div>
+          <NoteField value={m.note} onChange={(v) => onUpd(m.id, { note: v })}
+            placeholder="Notes, decisions, action items — as long as you need" minRows={2} />
+          <IconBtn title="Remove check-in" style={{ marginTop: 4 }} onClick={() => onRm(m.id)}><Trash2 size={13} /></IconBtn>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Phase II's tranche ledger: the disbursed figure is its total, never typed. */
+function PaymentsCard({ rec, onAdd, onUpd, onRm }) {
+  const list = rec.payments || [];
+  return (
+    <div className="card">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+        <div className="eyebrow">Payments · {list.length}</div>
+        <button className="mini" onClick={() => onAdd({ date: todayISO(), amount: "", note: "" })}><Plus size={11} style={{ verticalAlign: -1 }} /> Payment</button>
+      </div>
+      {list.length === 0 && <div style={{ color: T.muted, fontSize: 12.5 }}>No payments recorded yet.</div>}
+      {list.map((pay) => (
+        <div key={pay.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "9px 0", borderBottom: `1px solid ${T.hairline}`, flexWrap: "wrap" }}>
+          <div style={{ flex: "0 0 auto", paddingTop: 1 }}>
+            <DateField value={pay.date} onChange={(v) => onUpd(pay.id, { date: v })} w="126px" title="Payment date" />
+          </div>
+          <span className={"moneyfield" + (Number(pay.amount) > 0 ? "" : " empty")}
+            title={Number(pay.amount) > 0 ? "Payment amount" : "How much was paid — without it this payment adds nothing to the disbursed total"}>
+            <span className="cur">$</span>
+            <EInput value={pay.amount} onChange={(v) => onUpd(pay.id, { amount: money(v) })} placeholder="Amount" mono w="76px" ariaLabel="Payment amount" />
+          </span>
+          <div style={{ flex: "1 1 160px", minWidth: 0 }}>
+            <NoteField value={pay.note} onChange={(v) => onUpd(pay.id, { note: v })} placeholder="What it covers — tranche, milestone, conditions" minRows={1} />
+          </div>
+          <IconBtn title="Remove payment" style={{ marginTop: 4 }} onClick={() => onRm(pay.id)}><Trash2 size={13} /></IconBtn>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Give every running team in view the same deliverable in one go. */
+function AssignToAll({ count, onAssign }) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [due, setDue] = useState("");
+  if (!open) {
+    return (
+      <button className="mini" onClick={() => setOpen(true)} disabled={!count}
+        title={count ? `Add the same deliverable to all ${count} running teams in view` : "No running teams in view"}>
+        <Plus size={11} style={{ verticalAlign: -1 }} /> Give every team a deliverable
+      </button>
+    );
+  }
+  const go = () => { if (!title.trim()) return; onAssign(title.trim(), due); setOpen(false); setTitle(""); setDue(""); };
+  return (
+    <div className="card" style={{ marginTop: 12, padding: 14, borderColor: T.burgundy }}>
+      <div className="eyebrow" style={{ marginBottom: 8 }}>Same deliverable for all {count} running team{count === 1 ? "" : "s"} in view</div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ flex: "1 1 220px" }}>
+          <EInput value={title} onChange={setTitle} placeholder="e.g. Interim report" ariaLabel="Deliverable for every team" />
+        </span>
+        <DateField value={due} onChange={setDue} title="Due date" />
+        <button className="btn sm" onClick={go} disabled={!title.trim()}>Add to {count} team{count === 1 ? "" : "s"}</button>
+        <button className="mini" onClick={() => setOpen(false)}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+/** What are we waiting on? One list, worst first, then a roll-up by team. */
+function DeliverablesTab({ teams, summary, scopeNote, elsewhere, onSubmit, onOpen, onAssign }) {
+  const running = teams.filter(isRunning);
+  return (
+    <>
+      <div className="grid resp" style={{ gridTemplateColumns: "repeat(3,1fr)", marginTop: 16, gap: 12 }}>
+        <Stat n={summary.overdue} l="Overdue or due today" accent={summary.overdue ? T.danger : "var(--accent)"} />
+        <Stat n={summary.soon} l={`Due within ${SOON_DAYS} days`} accent={summary.soon ? T.warnInk : "var(--accent)"} />
+        <Stat n={summary.teamsOwing} l="Teams that owe us something" accent="var(--accent)" />
+      </div>
+
+      <div className="card" style={{ marginTop: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 4 }}>
+          <div className="eyebrow">
+            <Inbox size={12} style={{ verticalAlign: -2, marginRight: 5 }} />
+            Waiting on · {summary.outstanding} outstanding{scopeNote ? ` in ${scopeNote}` : ""}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <AssignToAll count={running.length} onAssign={(title, due) => onAssign(title, due, running.map((t) => t.id))} />
+            <span className="mono" style={{ fontSize: 11.5, color: T.muted }}>Today is {fmtDate(todayISO())}</span>
+          </div>
+        </div>
+        {summary.rows.length === 0 ? (
+          <div className="empty">
+            <PackageCheck size={22} style={{ color: T.ok, display: "block", margin: "0 auto 8px" }} />
+            {scopeNote && elsewhere > 0
+              ? `Nothing outstanding in ${scopeNote}. ${elsewhere} elsewhere — clear the filter to see them.`
+              : "Nothing outstanding. Every deliverable on file is submitted."}
+          </div>
+        ) : summary.rows.map((d) => (
+          <div key={`${d.profileId}:${d.id}`} className="delrow">
+            <Pill bg={d.state.bg} fg={d.state.fg}>{d.state.label}</Pill>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 600 }}>{d.title || "Untitled deliverable"}</div>
+              <div style={{ color: T.muted, fontSize: 12, marginTop: 2 }}>{d.team}{d.due ? ` · due ${fmtDate(d.due)}` : " · no due date set"}</div>
+              {d.note && <div style={{ color: T.muted, fontSize: 12, marginTop: 5, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{d.note}</div>}
+            </div>
+            <div style={{ display: "flex", gap: 6, flex: "0 0 auto", alignItems: "center" }}>
+              <button className="mini" onClick={() => onSubmit(d.profileId, d.id)}><Check size={11} style={{ verticalAlign: -1, marginRight: 3 }} />Mark submitted</button>
+              <button className="mini" title="Open this team" onClick={() => onOpen(d.profileId)}>Open team</button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {teams.length > 0 && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <div className="eyebrow" style={{ marginBottom: 6 }}>By team</div>
+          <div style={{ overflowX: "auto" }}>
+            <table>
+              <thead><tr>
+                <th scope="col">Team</th><th scope="col">Outstanding</th><th scope="col">Submitted</th><th scope="col">Status</th>
+                <th scope="col">Last check-in</th><th scope="col">Documents</th><th scope="col" aria-label="Open" />
+              </tr></thead>
+              <tbody>
+                {[...teams].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => {
+                  const all = p.deliverables || [];
+                  const out = all.filter(isOutstanding);
+                  const worst = profileDeliverableState(p);
+                  const st = statusOf(p);
+                  const cin = lastCheckin(p);
+                  const ds = docsSummary(p);
+                  return (
+                    <tr key={p.id}>
+                      <td style={{ minWidth: 150, fontWeight: 600 }}>{p.name || "Untitled team"}</td>
+                      <td className="mono">{isRunning(p) ? out.length : "—"}</td>
+                      <td className="mono" style={{ color: T.muted }}>{all.length - out.length}/{all.length}</td>
+                      <td>{!isRunning(p)
+                        ? <Pill bg={st.bg} fg={st.fg}>{st.id === "withdrawn" ? <Ban size={12} /> : <CheckCircle2 size={12} />} {st.label}</Pill>
+                        : worst ? <Pill bg={worst.bg} fg={worst.fg}>{worst.label}</Pill>
+                        : <Pill bg={T.okTint} fg={T.ok}><Check size={12} /> All in</Pill>}</td>
+                      <td style={{ whiteSpace: "nowrap" }}>{isRunning(p)
+                        ? <span className="mono" style={{ fontSize: 11.5, color: cin.stale ? T.warnInk : T.muted }}>{cin.label}</span>
+                        : <span style={{ color: T.muted }}>—</span>}</td>
+                      <td>{ds.missing.length
+                        ? <Pill bg={T.warnTint} fg={T.warnInk}><span title={`Missing: ${ds.missing.join(", ")}`}>{ds.onFile}/{ds.total} · no {ds.missing.map((m) => m.toLowerCase()).join(" or ")}</span></Pill>
+                        : <Pill bg={T.okTint} fg={T.ok}><Check size={12} /> Both on file</Pill>}</td>
+                      <td><button className="mini" onClick={() => onOpen(p.id)}>Open</button></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/** Everyone on file, ready to copy, email (BCC) or print. */
+function ContactsTab({ rows, groupLabel, showCycle, tools, emptyText, onPrint }) {
+  const [copied, setCopied] = useState(false);
+  const emails = [...new Set(rows.map((r) => r.email).filter(Boolean))];
+  const copy = async () => {
+    if (!emails.length) { await ui.alert("No email addresses in this view yet."); return; }
+    const list = emails.join("; ");
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(list);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } else {
+      await ui.prompt("Copy these addresses", list, { title: `${emails.length} addresses` });
+    }
+  };
+  return (
+    <>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 16 }}>
+        <button className="mini" onClick={copy} title="Copy every address in this view, ready to paste into a mail client">
+          <Copy size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
+          {copied ? "Copied ✓" : `Copy ${emails.length} email${emails.length === 1 ? "" : "s"}`}
+        </button>
+        <a className="mini" style={{ textDecoration: "none", display: "inline-flex", alignItems: "center" }}
+          href={`mailto:?bcc=${encodeURIComponent(emails.join(","))}`}
+          title="Open your mail app with everyone in BCC, so nobody sees anyone else's address">
+          <Mail size={11} style={{ verticalAlign: -1, marginRight: 4 }} /> Email everyone (BCC)
+        </a>
+        <button className="mini" onClick={() => onPrint(rows)}>
+          <Printer size={11} style={{ verticalAlign: -1, marginRight: 4 }} /> Print
+        </button>
+        {tools}
+        <span className="mono" style={{ fontSize: 11.5, color: T.muted, marginLeft: "auto" }}>
+          {rows.length} contact{rows.length === 1 ? "" : "s"}
+        </span>
+      </div>
+      {rows.length === 0 ? (
+        <div className="card" style={{ marginTop: 16, color: T.muted, fontSize: 13.5 }}>{emptyText}</div>
+      ) : (
+        <div className="card" style={{ marginTop: 14 }}>
+          <div style={{ overflowX: "auto" }}>
+            <table>
+              <thead><tr>
+                <th scope="col">Name</th><th scope="col">Email</th><th scope="col">Team</th><th scope="col">{groupLabel}</th>
+                {showCycle && <th scope="col">Cycle</th>}
+              </tr></thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.rowId} style={r.current === false ? { opacity: 0.62 } : undefined}>
+                    <td style={{ minWidth: 150, fontWeight: 600 }}>{r.name}</td>
+                    <td style={{ minWidth: 190 }}>
+                      {r.email
+                        ? <a className="mono" href={`mailto:${r.email}`} style={{ fontSize: 11.5, color: T.info }}>{r.email}</a>
+                        : <span style={{ color: T.muted, fontSize: 12 }}>no email on file</span>}
+                    </td>
+                    <td style={{ fontSize: 12.5 }}>{r.team}</td>
+                    <td><Pill bg={T.surface} fg={r.group.accent}>{r.group.name}</Pill></td>
+                    {showCycle && (
+                      <td className="mono" style={{ fontSize: 11, color: T.muted, whiteSpace: "nowrap" }}>
+                        {r.cycleLabel}{r.current ? "" : ` · ${r.note}`}
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

@@ -65,18 +65,47 @@ export const SOON_DAYS = 7;
    Team status
 
    A team that withdraws or goes quiet used to have nowhere to be recorded, so
-   it stayed in every count as though it were still running. Status is carried
-   on the Phase I profile; anything saved before this reads as active.
+   it stayed in every count as though it were still running. Phase I and
+   Phase II teams share one list, so a team reads the same in either phase;
+   anything saved before this reads as active.
    ============================================================ */
 export const TEAM_STATUS = [
   { id: "active", label: "Active", fg: T.ok, bg: T.okTint },
   { id: "atrisk", label: "At risk", fg: T.warnInk, bg: T.warnTint },
+  { id: "completed", label: "Completed", fg: T.info, bg: "#DCEBF3" },
   { id: "withdrawn", label: "Withdrawn", fg: T.muted, bg: "#EFEAE5" },
 ];
 export const statusOf = (p) =>
   TEAM_STATUS.find((x) => x.id === (p && p.status)) || TEAM_STATUS[0];
-/** Withdrawn teams owe us nothing and are not counted as running. */
-export const isRunning = (p) => statusOf(p).id !== "withdrawn";
+/** Still doing the work: owes deliverables, expected at sessions and check-ins. */
+export const isRunning = (p) => ["active", "atrisk"].includes(statusOf(p).id);
+/** Counts toward the money: everyone but a team that withdrew. */
+export const isFunded = (p) => statusOf(p).id !== "withdrawn";
+
+/* ============================================================
+   Check-ins
+
+   Both phases promise teams regular check-ins (monthly in Phase I). The date
+   of the last one is read from the meetings already logged, so a team that
+   has gone quiet shows up without anyone keeping a separate list.
+   ============================================================ */
+export const CHECKIN_DAYS = 35;
+
+/** The most recent check-in on or before today, and how long ago it was. */
+export function lastCheckin(rec) {
+  const past = ((rec && rec.meetings) || [])
+    .map((m) => m && m.date)
+    .filter((d) => daysUntil(d) !== null && daysUntil(d) <= 0)
+    .sort();
+  const last = past.length ? past[past.length - 1] : null;
+  const days = last ? -daysUntil(last) : null;
+  const stale = isRunning(rec) && (days === null || days > CHECKIN_DAYS);
+  const label = days === null ? "No check-in yet"
+    : days === 0 ? "Today"
+    : days < 14 ? `${days} day${days === 1 ? "" : "s"} ago`
+    : `${Math.round(days / 7)} weeks ago`;
+  return { last, days, stale, label };
+}
 
 export function deliverableState(d) {
   if (!d) return { key: "pending", label: "Pending", fg: T.muted, bg: "#EFEAE5", rank: 4 };
