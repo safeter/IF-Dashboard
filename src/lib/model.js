@@ -65,18 +65,47 @@ export const SOON_DAYS = 7;
    Team status
 
    A team that withdraws or goes quiet used to have nowhere to be recorded, so
-   it stayed in every count as though it were still running. Status is carried
-   on the Phase I profile; anything saved before this reads as active.
+   it stayed in every count as though it were still running. Phase I and
+   Phase II teams share one list, so a team reads the same in either phase;
+   anything saved before this reads as active.
    ============================================================ */
 export const TEAM_STATUS = [
   { id: "active", label: "Active", fg: T.ok, bg: T.okTint },
   { id: "atrisk", label: "At risk", fg: T.warnInk, bg: T.warnTint },
+  { id: "completed", label: "Completed", fg: T.info, bg: "#DCEBF3" },
   { id: "withdrawn", label: "Withdrawn", fg: T.muted, bg: "#EFEAE5" },
 ];
 export const statusOf = (p) =>
   TEAM_STATUS.find((x) => x.id === (p && p.status)) || TEAM_STATUS[0];
-/** Withdrawn teams owe us nothing and are not counted as running. */
-export const isRunning = (p) => statusOf(p).id !== "withdrawn";
+/** Still doing the work: owes deliverables, expected at sessions and check-ins. */
+export const isRunning = (p) => ["active", "atrisk"].includes(statusOf(p).id);
+/** Counts toward the money: everyone but a team that withdrew. */
+export const isFunded = (p) => statusOf(p).id !== "withdrawn";
+
+/* ============================================================
+   Check-ins
+
+   Both phases promise teams regular check-ins (monthly in Phase I). The date
+   of the last one is read from the meetings already logged, so a team that
+   has gone quiet shows up without anyone keeping a separate list.
+   ============================================================ */
+export const CHECKIN_DAYS = 35;
+
+/** The most recent check-in on or before today, and how long ago it was. */
+export function lastCheckin(rec) {
+  const past = ((rec && rec.meetings) || [])
+    .map((m) => m && m.date)
+    .filter((d) => daysUntil(d) !== null && daysUntil(d) <= 0)
+    .sort();
+  const last = past.length ? past[past.length - 1] : null;
+  const days = last ? -daysUntil(last) : null;
+  const stale = isRunning(rec) && (days === null || days > CHECKIN_DAYS);
+  const label = days === null ? "No check-in yet"
+    : days === 0 ? "Today"
+    : days < 14 ? `${days} day${days === 1 ? "" : "s"} ago`
+    : `${Math.round(days / 7)} weeks ago`;
+  return { last, days, stale, label };
+}
 
 export function deliverableState(d) {
   if (!d) return { key: "pending", label: "Pending", fg: T.muted, bg: "#EFEAE5", rank: 4 };
@@ -161,6 +190,52 @@ export function parseMembers(text) {
       const name = line.replace(email, "").replace(/\s{2,}/g, " ").trim().replace(/[\s,;:\u00b7|\-\u2013]+$/, "").trim();
       return { name: name || email, email, key: (email || name).toLowerCase() };
     });
+}
+
+/* ============================================================
+   Attendance roster check
+
+   The attendance list is built from each Phase I team's Members field. A
+   team with nobody listed, or a Selected team that was never set up as a
+   Phase I team, would otherwise be missing from it without anyone noticing.
+   ============================================================ */
+export function rosterGaps(profiles, missingProfiles) {
+  return {
+    noMembers: (profiles || []).filter((p) => isRunning(p) && parseMembers(p.members).length === 0),
+    noProfile: missingProfiles || [],
+  };
+}
+
+/* ============================================================
+   Team tracker
+
+   One row per team, one column per thing we are waiting on — a document
+   submitted, a meeting scheduled. Each cell says where it stands. The list
+   of things is editable per phase; the answers live on the team itself, so
+   they travel with it.
+   ============================================================ */
+export const TRACK_STATUS = [
+  { id: "notdone", label: "Not done", fg: T.muted, bg: "#EFEAE5" },
+  { id: "scheduled", label: "Scheduled", fg: T.info, bg: "#DCEBF3" },
+  { id: "followup", label: "Needs follow-up", fg: T.warnInk, bg: T.warnTint },
+  { id: "done", label: "Done", fg: T.ok, bg: T.okTint },
+];
+export const trackStatus = (rec, itemId) =>
+  TRACK_STATUS.find((x) => x.id === ((rec && rec.tracker) || {})[itemId]) || TRACK_STATUS[0];
+
+/** Counts across the running teams in view. */
+export function trackerSummary(teams, items) {
+  const rows = (teams || []).filter(isRunning);
+  const cells = rows.flatMap((t) => (items || []).map((it) => ({ team: t, st: trackStatus(t, it.id).id })));
+  const followTeams = new Set(cells.filter((c) => c.st === "followup").map((c) => c.team.id));
+  return {
+    teams: rows.length,
+    total: cells.length,
+    done: cells.filter((c) => c.st === "done").length,
+    scheduled: cells.filter((c) => c.st === "scheduled").length,
+    followup: cells.filter((c) => c.st === "followup").length,
+    teamsFollowup: followTeams.size,
+  };
 }
 
 export { ISO_RE };

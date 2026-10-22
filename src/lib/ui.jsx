@@ -173,7 +173,7 @@ export function DialogHost() {
    traction updates), so nothing here is capped to one line. It starts at
    `minRows` and grows to fit; the user can still drag it taller.
    ============================================================ */
-export function NoteField({ value, onChange, placeholder, minRows = 1, mono, style }) {
+export function NoteField({ value, onChange, placeholder, minRows = 1, mono, style, label }) {
   const ref = useRef(null);
   const resize = useCallback(() => {
     const el = ref.current;
@@ -190,6 +190,7 @@ export function NoteField({ value, onChange, placeholder, minRows = 1, mono, sty
       value={value ?? ""}
       rows={minRows}
       placeholder={placeholder}
+      aria-label={label}
       onChange={(e) => { onChange(e.target.value); resize(); }}
       style={style}
     />
