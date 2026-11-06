@@ -1,6 +1,6 @@
 import {
   callFor, totalScore, judgeScores, judgesIn, deliverableState, statusOf, isRunning, isFunded,
-  isOutstanding, parseMembers, REQUIRED_DOCS, lastCheckin, trackStatus,
+  isOutstanding, parseMembers, REQUIRED_DOCS, lastCheckin, trackStatus, ledgerTotal,
 } from "./model";
 import { safeUrl } from "./ui";
 
@@ -54,13 +54,16 @@ export function buildWorkbook(XLSX, d) {
   const phase2 = d.phase2 || [];
   const p2Name = (p) => txt(p.team);
   const checkin = (p) => (isRunning(p) ? lastCheckin(p).last || "none yet" : "");
-  const paid = (p) => (p.payments || []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const paid = ledgerTotal;
+  /* Phase I spending is itemised like Phase II's payments; a team with no rows
+     yet keeps the single figure that used to be typed in. */
+  const spent = (p) => ((p.payments || []).length ? paid(p) : num(p.spent));
 
   /* ---- Summary ---- */
   const outstanding = running.flatMap((p) => (p.deliverables || []).filter(isOutstanding));
   const overdue = outstanding.filter((x) => ["overdue", "today"].includes(deliverableState(x).key));
   const seedAllocated = funded.reduce((s, p) => s + (Number(p.budget) || 0), 0);
-  const seedSpent = funded.reduce((s, p) => s + (Number(p.spent) || 0), 0);
+  const seedSpent = funded.reduce((s, p) => s + (spent(p) || 0), 0);
   const activeP2 = phase2.filter(isRunning);
   const p2Out = activeP2.flatMap((p) => (p.deliverables || []).filter(isOutstanding));
   const p2Late = p2Out.filter((x) => ["overdue", "today"].includes(deliverableState(x).key));
@@ -101,7 +104,7 @@ export function buildWorkbook(XLSX, d) {
     ["Team", "Call", "Status", "Members", "Department", "Supervisor", "Mentor", "Finance account",
      "Budget ($)", "Spent ($)", "Remaining ($)", ...REQUIRED_DOCS.map((r) => r.label), "Deliverables outstanding", "Last check-in", "Notes"],
     profiles.map((p) => {
-      const b = num(p.budget), s = num(p.spent);
+      const b = num(p.budget), s = spent(p);
       return [
         txt(p.name), callName(p), statusOf(p).label, parseMembers(p.members).length,
         txt(p.dept), txt(p.supervisor), txt(p.mentor), p.finance === "opened" ? "Opened" : "Pending",
@@ -109,6 +112,8 @@ export function buildWorkbook(XLSX, d) {
         isRunning(p) ? (p.deliverables || []).filter(isOutstanding).length : 0, checkin(p), txt(p.notes),
       ];
     })), "Phase I teams");
+  XLSX.utils.book_append_sheet(wb, sheet(XLSX, ["Team", "Date", "Amount ($)", "Note"],
+    profiles.flatMap((p) => (p.payments || []).map((x) => [txt(p.name), txt(x.date), num(x.amount), txt(x.note)]))), "Phase I spending");
 
   /* ---- Deliverables ---- */
   XLSX.utils.book_append_sheet(wb, sheet(XLSX,

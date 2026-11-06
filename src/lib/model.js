@@ -238,6 +238,24 @@ export function trackerSummary(teams, items) {
   };
 }
 
+/* ============================================================
+   Money ledgers
+
+   Both phases record money the same way: dated rows with an amount and a
+   note. Phase II pays an award out in tranches; Phase I spends a seed
+   budget held in the team's Financial Services account. One reader keeps
+   the two totals, the screens and the Excel export in agreement.
+   ============================================================ */
+/** Total of a team's money rows. Rows without an amount count as nothing. */
+export function ledgerTotal(rec) {
+  return ((rec && rec.payments) || []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+}
+
+/** Rows on file that carry no amount — they add nothing until one is typed. */
+export function ledgerBlanks(rec) {
+  return ((rec && rec.payments) || []).filter((x) => !(Number(x.amount) > 0)).length;
+}
+
 export { ISO_RE };
 
 
