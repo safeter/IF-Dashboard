@@ -97,6 +97,11 @@ const STYLE = `
 .workspace{display:grid;grid-template-columns:240px minmax(0,1fr);gap:16px;align-items:start;margin-top:16px}
 .teamlist{padding:8px;position:sticky;top:68px;max-height:calc(100vh - 84px);overflow:auto}
 .tlgroup+.tlgroup{margin-top:8px;padding-top:8px;border-top:1px solid ${T.hairline}}
+/* The list scrolls on its own, so its search box stays put at the top of it. */
+.tlsearch{position:sticky;top:-8px;z-index:1;background:${T.surface};padding:2px 2px 8px;margin:-2px -2px 0}
+.tlsearch .search{max-width:none;padding:3px 10px}
+.tlhit{display:block;font-size:11px;color:var(--accent);margin-top:1px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
 .teamrow{display:flex;align-items:flex-start;gap:9px;width:100%;text-align:left;padding:8px 10px;border-radius:10px;min-height:44px}
 .teamrow:hover{background:${T.paper}}
 .teamrow.on{background:${T.paper};outline:1px solid ${T.hairline};outline-offset:-1px}
@@ -4085,15 +4090,47 @@ const kMoney = (n) => (n >= 1000 ? `$${(Math.round(n / 100) / 10).toLocaleString
 
 /** The teams, as a list beside the team in view. Each row carries what needs
     chasing — worst deliverable, at risk, a quiet spell — without opening it. */
+/** The team list down the side of both phases. It carries a search, because
+    the question is as often "which team is this person on?" as it is "where
+    is this team?" — and nobody should have to open teams one by one to find
+    out. Matching is on the team's name and on anyone in its member list. */
 function TeamList({ groups, activeId, onPick, moneyOf }) {
+  const [q, setQ] = useState("");
+  const needle = q.trim().toLowerCase();
+  const match = (p) => {
+    if (!needle) return { ok: true, people: [] };
+    if ((p.name || "").toLowerCase().includes(needle)) return { ok: true, people: [] };
+    const people = parseMembers(p.members).filter(
+      (m) => m.name.toLowerCase().includes(needle) || m.email.toLowerCase().includes(needle)
+    );
+    return { ok: people.length > 0, people };
+  };
+  const shown = groups.map((g) => ({
+    ...g,
+    rows: g.teams.map((p) => ({ p, hit: match(p) })).filter((x) => x.hit.ok),
+  }));
+  const found = shown.reduce((n, g) => n + g.rows.length, 0);
   return (
     <nav className="card teamlist" aria-label="Teams">
-      {groups.map(({ id, label, accent, teams }) => {
-        if (!teams.length) return null;
+      <div className="tlsearch">
+        <div className="search">
+          <Search size={14} style={{ color: T.muted, flex: "0 0 auto" }} />
+          <input value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search teams or members"
+            placeholder="Search a team or a member…" />
+          {q && <IconBtn title="Clear the search" onClick={() => setQ("")}><X size={13} /></IconBtn>}
+        </div>
+      </div>
+      {needle && found === 0 && (
+        <div style={{ color: T.muted, fontSize: 12.5, padding: "6px 10px 10px" }}>
+          No team or member matches “{q.trim()}”.
+        </div>
+      )}
+      {shown.map(({ id, label, accent, rows }) => {
+        if (!rows.length) return null;
         return (
           <div key={id} className="tlgroup">
-            <div className="eyebrow" style={{ color: accent, padding: "4px 10px 6px" }}>{label} · {teams.length}</div>
-            {[...teams].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => {
+            <div className="eyebrow" style={{ color: accent, padding: "4px 10px 6px" }}>{label} · {rows.length}</div>
+            {[...rows].sort((a, b) => (a.p.name || "").localeCompare(b.p.name || "")).map(({ p, hit }) => {
               const st = statusOf(p);
               const running = isRunning(p);
               const worst = running ? profileDeliverableState(p) : null;
@@ -4115,6 +4152,11 @@ function TeamList({ groups, activeId, onPick, moneyOf }) {
                       {st.id !== "active" ? st.label : running && cin.stale ? "check-in due" : "on track"}
                       {m.granted > 0 ? ` · ${kMoney(m.used)} of ${kMoney(m.granted)}` : ""}
                     </span>
+                    {/* Searching by person: say who on this team was matched,
+                        otherwise the list answers with a team name alone. */}
+                    {hit.people.length > 0 && (
+                      <span className="tlhit">{hit.people.map((x) => x.name || x.email).join(", ")}</span>
+                    )}
                   </span>
                 </button>
               );
@@ -4125,8 +4167,6 @@ function TeamList({ groups, activeId, onPick, moneyOf }) {
     </nav>
   );
 }
-
-/** Which team this is, how it is doing, and the settings that apply to all of it. */
 function TeamHeader({ rec, name, onName, onChange, groupControl, origin, followups }) {
   const st = statusOf(rec);
   const running = isRunning(rec);
