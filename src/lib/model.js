@@ -256,6 +256,16 @@ export function ledgerBlanks(rec) {
   return ((rec && rec.payments) || []).filter((x) => !(Number(x.amount) > 0)).length;
 }
 
+/** The line under a funding bar: where the figure above it came from. Both
+    phases say it the same way, from here, so the two cannot drift apart. */
+export function ledgerNote(rec) {
+  const n = ((rec && rec.payments) || []).length;
+  const blank = ledgerBlanks(rec);
+  if (!n) return "no payments recorded yet — add one under Payments";
+  if (blank) return `${blank} of ${n} payment${n === 1 ? "" : "s"} has no amount — type it in the $ box`;
+  return `total of ${n} payment${n === 1 ? "" : "s"} under Payments`;
+}
+
 export { ISO_RE };
 
 
