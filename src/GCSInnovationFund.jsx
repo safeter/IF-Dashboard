@@ -1980,6 +1980,35 @@ export default function App() {
     if (!(await confirmDelete(q.title ? `“${q.title}”` : "this Q&A", !!(q.title || q.date || q.room)))) return;
     setPizza((ps) => ps.filter((_, j) => j !== i));
   };
+  /* Taking a team out of the pipeline. One routine, so the list row and the
+     board card ask the same question and say the same thing. */
+  const removeTeam = async (t) => {
+    const ok = await ui.confirm(
+      "It is removed from the selection pipeline. A Phase I team already set up from it is kept.",
+      { title: `Remove ${t.name || "this team"}?`, confirmLabel: "Remove", danger: true }
+    );
+    if (!ok) return false;
+    setTeams((ts) => ts.filter((x) => x.id !== t.id));
+    return true;
+  };
+  /* Removing a call: offered on its card under Calls & promo, and on the
+     Selection filter, where an unwanted call is what is actually in the way.
+     Teams under it are never deleted with it — they fall to "Unassigned". */
+  const removeCall = async (c) => {
+    if (!c || c.fixed || c.id === UNASSIGNED) return;
+    const attached = teams.filter((t) => callFor(t, callList).id === c.id).length
+      + profileRows.filter((pr) => pr.callId === c.id).length;
+    const ok = await ui.confirm(
+      attached
+        ? `${attached} team${attached === 1 ? "" : "s"} sit under this call. They are kept, but move to an “Unassigned” group in Selection and Teams until you put them in another call.`
+        : "Class visits advertised under this call lose their tag.",
+      { title: `Remove the ${c.name} call?`, confirmLabel: "Remove", danger: true }
+    );
+    if (!ok) return;
+    setCallList((cs) => cs.filter((x) => x.id !== c.id));
+    if (callFilter === c.id) setCallFilter("all");
+    if (profileCallFilter === c.id) setProfileCallFilter("all");
+  };
   const updCall = (id, patch) => setCallList((cs) => cs.map((c) => (c.id === id ? { ...c, ...patch } : c)));
   const updRoad = (i, patch) => setRoad((r) => r.map((t, j) => (j === i ? { ...t, ...patch } : t)));
   const addRoad = () => setRoad((r) => [...r, { rid: uid(), team: "", lastSeen: "—", runs: 0, status: "notstarted", note: "" }]);
@@ -2026,6 +2055,21 @@ export default function App() {
   }, [cohortData]);
   const updTeam = (ci, ti, patch) => setCohortData((cd) => cd.map((co, a) => (a === ci ? { ...co, teams: co.teams.map((t, b) => (b === ti ? { ...t, ...patch } : t)) } : co)));
   const rmTeam = (ci, ti) => setCohortData((cd) => cd.map((co, a) => (a === ci ? { ...co, teams: co.teams.filter((_, b) => b !== ti) } : co)));
+  /* A cohort published by mistake — or a trial run — could only be emptied
+     team by team, and an empty one still sat in the library and its filter. */
+  const rmCohort = async (ci) => {
+    const co = cohortData[ci];
+    if (!co) return;
+    const n = (co.teams || []).length;
+    const ok = await ui.confirm(
+      n ? `Its ${n} team${n === 1 ? "" : "s"} go with it. Phase I and Phase II records for those teams are not touched.`
+        : "It holds no teams.",
+      { title: `Remove “${co.c || "this cohort"}” from the library?`, confirmLabel: "Remove", danger: true }
+    );
+    if (!ok) return;
+    setCohortData((cd) => cd.filter((_, a) => a !== ci));
+    if (cohortFilter === co.c) setCohortFilter("all");
+  };
   const addTeam = (ci) => {
     const rid = uid();
     setCohortData((cd) => cd.map((co, a) => (a === ci ? { ...co, teams: [...co.teams, { rid, name: "", blurb: "", awards: [], phase2: false, note: "" }] } : co)));
@@ -2496,20 +2540,7 @@ export default function App() {
                     onEdit={() => setEditingCall(editingCall === c.id ? null : c.id)}
                     onChange={(patch) => updCall(c.id, patch)}
                     onOpen={() => { setCallFilter(c.id); setView("selection"); }}
-                    onRemove={c.fixed ? null : async () => {
-                      const attached = teams.filter((t) => callFor(t, callList).id === c.id).length
-                        + profileRows.filter((p) => p.callId === c.id).length;
-                      const ok = await ui.confirm(
-                        attached
-                          ? `${attached} team${attached === 1 ? "" : "s"} sit under this call. They are kept, but move to an “Unassigned” group in Selection and Teams until you put them in another call.`
-                          : "Class visits advertised under this call lose their tag.",
-                        { title: `Remove the ${c.name} call?`, confirmLabel: "Remove", danger: true }
-                      );
-                      if (!ok) return;
-                      setCallList((cs) => cs.filter((x) => x.id !== c.id));
-                      if (callFilter === c.id) setCallFilter("all");
-                      if (profileCallFilter === c.id) setProfileCallFilter("all");
-                    }} />
+                    onRemove={c.fixed ? null : () => removeCall(c)} />
                 ))}
                 <AddCallCard draft={draft} setDraft={setDraft} palette={PALETTE}
                   onAdd={() => {
@@ -2680,6 +2711,18 @@ export default function App() {
                     <span className="n">{ts.length}</span>
                   </button>
                 ))}
+                {/* A call added by mistake is noticed here, in the way, rather
+                    than on the Calls page — so it can go from here. */}
+                {(() => {
+                  const c = callList.find((x) => x.id === callFilter && !x.fixed);
+                  if (!c) return null;
+                  return (
+                    <button className="mini danger" onClick={() => removeCall(c)}
+                      title={`Remove the ${c.name} call — its teams are kept and move to Unassigned`}>
+                      <Trash2 size={11} style={{ verticalAlign: -1, marginRight: 4 }} />Remove this call
+                    </button>
+                  );
+                })()}
                 <div className="search" style={{ marginLeft: "auto", maxWidth: 260 }}>
                   <Search size={15} style={{ color: T.muted }} />
                   <input placeholder="Search teams…" value={teamQuery} onChange={(e) => setTeamQuery(e.target.value)} aria-label="Search teams" />
@@ -2770,10 +2813,8 @@ export default function App() {
                                     </select>
                                   </td>
                                   <td>
-                                    <IconBtn title={`Delete ${t.name || "team"}`} onClick={async () => {
-                                      if (!(await ui.confirm("This removes the team from the selection pipeline.", { title: `Delete ${t.name || "this team"}?`, confirmLabel: "Delete", danger: true }))) return;
-                                      setTeams((ts) => ts.filter((x) => x.id !== t.id));
-                                    }}><Trash2 size={14} /></IconBtn>
+                                    <IconBtn title={`Remove ${t.name || "team"} from the pipeline`}
+                                      onClick={() => removeTeam(t)}><Trash2 size={14} /></IconBtn>
                                   </td>
                                 </tr>
                               ))}
@@ -2819,9 +2860,12 @@ export default function App() {
                                     {totalScore(t, JUDGES) != null ? `${totalScore(t, JUDGES)}/${MAX_SCORE}` : "—"}
                                   </span>
                                 </div>
-                                <div style={{ display: "flex", gap: 6, marginTop: 9 }}>
+                                <div style={{ display: "flex", gap: 6, marginTop: 9, alignItems: "center" }}>
                                   <button className="mini" aria-label="Move to previous stage" style={{ flex: 1, opacity: si === 0 ? 0.35 : 1 }} disabled={si === 0} onClick={() => upd(t.id, { stage: STAGES[si - 1].id })}>←</button>
                                   <button className="mini" aria-label="Move to next stage" style={{ flex: 1, opacity: si === STAGES.length - 1 ? 0.35 : 1 }} disabled={si === STAGES.length - 1} onClick={() => upd(t.id, { stage: STAGES[si + 1].id })}>→</button>
+                                  {/* The list has a row delete; the board had none, so a
+                                      card dragged in by mistake could only go from the list. */}
+                                  <IconBtn title={`Remove ${t.name || "this team"} from the pipeline`} onClick={() => removeTeam(t)}><Trash2 size={13} /></IconBtn>
                                 </div>
                               </div>
                             );
@@ -3605,7 +3649,10 @@ export default function App() {
                             <span className="disp" style={{ fontWeight: 700, fontSize: 16 }}>{co.c}</span>
                             <span className="mono" style={{ fontSize: 12, color: T.muted }}>{co.year}</span>
                             <span className="mono" style={{ fontSize: 11, color: T.muted }}>· {co.teams.length} team{co.teams.length === 1 ? "" : "s"}</span>
-                            <button className="btn ghost" style={{ marginLeft: "auto", fontSize: 11.5, padding: "5px 10px" }} onClick={() => setEditTeam(addTeam(ci))}><Plus size={13} /> Add team</button>
+                            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+                              <button className="btn ghost" style={{ fontSize: 11.5, padding: "5px 10px" }} onClick={() => setEditTeam(addTeam(ci))}><Plus size={13} /> Add team</button>
+                              <IconBtn title={`Remove “${co.c}” from the library`} onClick={() => rmCohort(ci)}><Trash2 size={14} /></IconBtn>
+                            </div>
                           </div>
                           <div className="scards">
                             {visible.map(({ t, ti }) => (
@@ -3619,7 +3666,11 @@ export default function App() {
                                     rmTeam(ci, ti); setEditTeam(null);
                                   }} />
                               ) : (
-                                <TeamCard key={t.rid || `${ci}-${ti}`} t={t} phase2={inPhase2(t)} onEdit={() => setEditTeam(t.rid)} />
+                                <TeamCard key={t.rid || `${ci}-${ti}`} t={t} phase2={inPhase2(t)} onEdit={() => setEditTeam(t.rid)}
+                                  onRemove={async () => {
+                                    if (!(await ui.confirm("It is removed from the success library.", { title: `Remove ${t.name || "this team"}?`, confirmLabel: "Remove", danger: true }))) return;
+                                    rmTeam(ci, ti);
+                                  }} />
                               )
                             ))}
                           </div>
@@ -3880,7 +3931,7 @@ function Alert({ icon, text, cta, onClick, accent, last, tone }) {
     </div>
   );
 }
-function TeamCard({ t, phase2, onEdit }) {
+function TeamCard({ t, phase2, onEdit, onRemove }) {
   return (
     <div className="card" style={{ padding: 15 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
@@ -3888,6 +3939,7 @@ function TeamCard({ t, phase2, onEdit }) {
         <div style={{ display: "flex", gap: 6, alignItems: "center", flex: "0 0 auto" }}>
           {phase2 && <Pill bg={T.tint} fg={T.burgundy}>Phase II</Pill>}
           <IconBtn onClick={onEdit} title="Edit team"><Pencil size={13} /></IconBtn>
+          {onRemove && <IconBtn onClick={onRemove} title={`Remove ${t.name || "this team"} from the library`}><Trash2 size={13} /></IconBtn>}
         </div>
       </div>
       <div style={{ color: T.muted, fontSize: 12.5, marginTop: 6, lineHeight: 1.45 }}>{t.blurb}</div>
