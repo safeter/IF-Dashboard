@@ -28,6 +28,7 @@ import {
   parseMembers, TEAM_STATUS, statusOf, isRunning, isFunded, rosterGaps, lastCheckin, CHECKIN_DAYS,
   JUDGE_MAX, judgeScores, hasBreakdown, totalScore, judgesIn,
   REQUIRED_DOCS, docsSummary, TRACK_STATUS, trackStatus, trackerSummary,
+  ledgerTotal, ledgerBlanks,
 } from "./lib/model";
 import {
   LayoutGrid, Megaphone, ListChecks, CalendarDays,
@@ -1334,7 +1335,7 @@ export default function App() {
         : (accentObj ? accentObj.id : "regular")),
     members: "", dept: "", supervisor: "", mentor: "", finance: "pending", notes: "",
     budget: "", spent: "", status: "active",
-    meetings: [], deliverables: [], links: [], docs: {},
+    payments: [], meetings: [], deliverables: [], links: [], docs: {},
   });
   const missingProfiles = teams.filter(
     (t) => t.outcome === "select" && !profiles.some((p) => p.teamId === t.id || (p.name && p.name === t.name))
@@ -1361,6 +1362,22 @@ export default function App() {
     updProfile(pid, { [key]: [...(profiles.find((p) => p.id === pid)?.[key] || []), { id: uid(), ...blank }] });
   const rmSub = (pid, key, subId) =>
     updProfile(pid, { [key]: (profiles.find((p) => p.id === pid)?.[key] || []).filter((x) => x.id !== subId) });
+  /* Opening the spending ledger carries over whatever single figure was typed
+     into "Spent so far" as its first row, so itemising never quietly replaces
+     a number that was already on file. */
+  const addSpend = (pid, blank) => {
+    const p = profiles.find((x) => x.id === pid);
+    if (!p) return;
+    const rows = p.payments || [];
+    const lump = Number(p.spent) || 0;
+    const opening = lump > 0 && !rows.length
+      ? [{ id: uid(), date: "", amount: lump, note: "Recorded before this was itemised" }]
+      : [];
+    updProfile(pid, {
+      payments: [...rows, ...opening, { id: uid(), ...blank }],
+      ...(opening.length ? { spent: "" } : null),
+    });
+  };
   /* The same deliverable for many teams at once — most are cohort-wide. */
   const withDeliverable = (rec, title, due) =>
     ({ ...rec, deliverables: [...(rec.deliverables || []), { id: uid(), title, due, status: "pending", note: "" }] });
@@ -1447,7 +1464,7 @@ export default function App() {
   const p2Filter = p2Cohorts.includes(p2CohortFilter) ? p2CohortFilter : "all";
   const visibleP2 = p2Filter === "all" ? p2Teams : p2Teams.filter((p) => p2CohortOf(p) === p2Filter);
   const activeP2 = visibleP2.find((p) => p.id === activeP2Id) || visibleP2[0] || null;
-  const p2Paid = (p) => (p.payments || []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const p2Paid = ledgerTotal;
   const p2Owed = useMemo(() => deliverableSummary(p2Teams), [p2Teams]);
   const shownP2Owed = useMemo(() => deliverableSummary(visibleP2), [visibleP2]);
   const updP2 = (id, patch) => setPhase2((ps) => ps.map((p) => (p.id === id ? { ...p, ...patch } : p)));
@@ -1778,9 +1795,14 @@ export default function App() {
   /* Seed-year money. Phase I teams are given a budget through their Financial
      Services account; until now the screen recorded only whether that account
      was open, not what was in it. Profiles saved before this have neither
-     field, so both read as zero. */
+     field, so both read as zero.
+
+     Spending is itemised the same way Phase II itemises payments. A team with
+     no rows yet falls back to the single figure that used to be typed into
+     "Spent so far", so nothing recorded before this reads as zero. */
   const budgetOf = (p) => Number(p.budget) || 0;
-  const spentOf = (p) => Number(p.spent) || 0;
+  const hasLedger = (p) => ((p && p.payments) || []).length > 0;
+  const spentOf = (p) => (hasLedger(p) ? ledgerTotal(p) : Number(p.spent) || 0);
   const seedTotals = profiles.filter(isFunded).reduce(
     (a, p) => ({ allocated: a.allocated + budgetOf(p), spent: a.spent + spentOf(p) }),
     { allocated: 0, spent: 0 }
@@ -2810,6 +2832,10 @@ export default function App() {
           {view === "teams" && (() => {
             const p1Items = trackerItems || [];
             const p1Follow = trackerSummary(profiles, p1Items).followup;
+            /* How the open team's spending is kept: itemised under Spending, or
+               still the single figure typed into "Spent so far". */
+            const spendN = activeProfile ? (activeProfile.payments || []).length : 0;
+            const blankSpends = activeProfile ? ledgerBlanks(activeProfile) : 0;
             const openP1 = (pid) => { setActiveProfileId(pid); setProfileCallFilter("all"); setTeamsTab("profiles"); };
             return (
             <>
@@ -2903,21 +2929,40 @@ export default function App() {
                                 membersHint="No members yet, so this team won't appear on attendance lists or in Contacts." />
                               <FundingBlock grantedLabel="Seed budget" granted={budgetOf(activeProfile)}
                                 usedLabel="Spent so far" used={spentOf(activeProfile)}
-                                footnote="drawn from the team's Financial Services account"
+                                footnote={!spendN
+                                  ? "drawn from the team's Financial Services account — itemise it under Spending"
+                                  : blankSpends
+                                    ? `${blankSpends} of ${spendN} entr${spendN === 1 ? "y" : "ies"} has no amount — type it in the $ box`
+                                    : `total of ${spendN} entr${spendN === 1 ? "y" : "ies"} under Spending`}
                                 grantedInput={
                                   <span className="moneyfield"><span className="cur">$</span>
                                     <EInput value={activeProfile.budget} mono w="86px" placeholder="0" ariaLabel="Seed-year budget"
                                       onChange={(v) => updProfile(activeProfile.id, { budget: money(v) })} />
                                   </span>
                                 }
-                                usedInput={
+                                usedInput={spendN ? (
+                                  /* Itemised: the figure is the ledger's total, exactly as
+                                     Phase II shows its payments, so it is read here and
+                                     changed under Spending. */
+                                  <span className="mono" title="The total of the spending recorded — change it under Spending"
+                                    style={{ display: "inline-block", fontSize: 13, padding: "6px 2px",
+                                             color: spentOf(activeProfile) > budgetOf(activeProfile) ? T.danger : T.ink }}>
+                                    ${spentOf(activeProfile).toLocaleString()}
+                                  </span>
+                                ) : (
                                   <span className={"moneyfield" + (budgetOf(activeProfile) > 0 && spentOf(activeProfile) === 0 ? " empty" : "")}
                                     title={budgetOf(activeProfile) > 0 && spentOf(activeProfile) === 0 ? "Nothing recorded as spent yet" : undefined}>
                                     <span className="cur">$</span>
                                     <EInput value={activeProfile.spent} mono w="86px" placeholder="0" ariaLabel="Spent so far"
                                       onChange={(v) => updProfile(activeProfile.id, { spent: money(v) })} />
                                   </span>
-                                } />
+                                )} />
+                              <PaymentsCard rec={activeProfile} title="Spending" noun="entry"
+                                empty="Nothing itemised yet — the figure above is the total of whatever is listed here."
+                                notePlaceholder="What it covers — purchase, invoice, reimbursement"
+                                onAdd={(blank) => addSpend(activeProfile.id, blank)}
+                                onUpd={(id, patch) => updSub(activeProfile.id, "payments", id, patch)}
+                                onRm={(id) => rmSub(activeProfile.id, "payments", id)} />
                               <Section title="Documents"><TeamDocs rec={activeProfile} onChange={(patch) => updProfile(activeProfile.id, patch)} bare /></Section>
                             </div>
                             <div>
@@ -4260,36 +4305,39 @@ function CheckinsCard({ rec, onAdd, onUpd, onRm }) {
 }
 
 /** Phase II's tranche ledger: the disbursed figure is its total, never typed. */
-function PaymentsCard({ rec, onAdd, onUpd, onRm }) {
+/** The money ledger both phases keep: dated rows with an amount and a note,
+    adding up to the figure shown under Funding. Phase II pays an award out;
+    Phase I spends a seed budget — same rows, its own words. */
+function PaymentsCard({ rec, onAdd, onUpd, onRm, title = "Payments", noun = "payment",
+  empty = "No payments recorded yet.", notePlaceholder = "What it covers — tranche, milestone, conditions" }) {
   const list = rec.payments || [];
+  const Noun = noun.charAt(0).toUpperCase() + noun.slice(1);
   return (
     <div className="card">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-        <div className="eyebrow">Payments · {list.length}</div>
-        <button className="mini" onClick={() => onAdd({ date: todayISO(), amount: "", note: "" })}><Plus size={11} style={{ verticalAlign: -1 }} /> Payment</button>
+        <div className="eyebrow">{title} · {list.length}</div>
+        <button className="mini" onClick={() => onAdd({ date: todayISO(), amount: "", note: "" })}><Plus size={11} style={{ verticalAlign: -1 }} /> {Noun}</button>
       </div>
-      {list.length === 0 && <div style={{ color: T.muted, fontSize: 12.5 }}>No payments recorded yet.</div>}
+      {list.length === 0 && <div style={{ color: T.muted, fontSize: 12.5 }}>{empty}</div>}
       {list.map((pay) => (
         <div key={pay.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "9px 0", borderBottom: `1px solid ${T.hairline}`, flexWrap: "wrap" }}>
           <div style={{ flex: "0 0 auto", paddingTop: 1 }}>
-            <DateField value={pay.date} onChange={(v) => onUpd(pay.id, { date: v })} w="126px" title="Payment date" />
+            <DateField value={pay.date} onChange={(v) => onUpd(pay.id, { date: v })} w="126px" title={`${Noun} date`} />
           </div>
           <span className={"moneyfield" + (Number(pay.amount) > 0 ? "" : " empty")}
-            title={Number(pay.amount) > 0 ? "Payment amount" : "How much was paid — without it this payment adds nothing to the disbursed total"}>
+            title={Number(pay.amount) > 0 ? `${Noun} amount` : `How much — without an amount this ${noun} adds nothing to the total`}>
             <span className="cur">$</span>
-            <EInput value={pay.amount} onChange={(v) => onUpd(pay.id, { amount: money(v) })} placeholder="Amount" mono w="76px" ariaLabel="Payment amount" />
+            <EInput value={pay.amount} onChange={(v) => onUpd(pay.id, { amount: money(v) })} placeholder="Amount" mono w="76px" ariaLabel={`${Noun} amount`} />
           </span>
           <div style={{ flex: "1 1 160px", minWidth: 0 }}>
-            <NoteField value={pay.note} onChange={(v) => onUpd(pay.id, { note: v })} placeholder="What it covers — tranche, milestone, conditions" minRows={1} />
+            <NoteField value={pay.note} onChange={(v) => onUpd(pay.id, { note: v })} placeholder={notePlaceholder} minRows={1} />
           </div>
-          <IconBtn title="Remove payment" style={{ marginTop: 4 }} onClick={() => onRm(pay.id)}><Trash2 size={13} /></IconBtn>
+          <IconBtn title={`Remove ${noun}`} style={{ marginTop: 4 }} onClick={() => onRm(pay.id)}><Trash2 size={13} /></IconBtn>
         </div>
       ))}
     </div>
   );
 }
-
-/** Give every running team in view the same deliverable in one go. */
 function AssignToAll({ count, onAssign }) {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
