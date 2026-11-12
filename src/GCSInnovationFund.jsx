@@ -21,13 +21,14 @@ const inkOn = (hex) => {
   return (1.05 / (L + 0.05)) >= 4.5 ? "#fff" : T.ink;
 };
 const DISP = "'Schibsted Grotesk', Inter, system-ui, -apple-system, 'Segoe UI', sans-serif";
-import { ui, DialogHost, NoteField, DateField, todayISO, fmtDate, safeUrl, linkHost, daysUntil } from "./lib/ui";
+import { ui, DialogHost, NoteField, DateField, todayISO, fmtDate, safeUrl, linkHost } from "./lib/ui";
 import {
   callFor, callGroups, matchCall, legacyCallId, UNASSIGNED,
   deliverableState, isOutstanding, deliverableSummary, profileDeliverableState, SOON_DAYS,
-  parseMembers, TEAM_STATUS, statusOf, isRunning, isFunded, rosterGaps, lastCheckin, CHECKIN_DAYS, givenOf,
+  parseMembers, TEAM_STATUS, statusOf, isRunning, isFunded, rosterGaps, lastCheckin, CHECKIN_DAYS,
   JUDGE_MAX, judgeScores, hasBreakdown, totalScore, judgesIn,
   REQUIRED_DOCS, docsSummary, TRACK_STATUS, trackStatus, trackerSummary,
+  ledgerTotal, ledgerNote,
 } from "./lib/model";
 import {
   LayoutGrid, Megaphone, ListChecks, CalendarDays,
@@ -96,6 +97,11 @@ const STYLE = `
 .workspace{display:grid;grid-template-columns:240px minmax(0,1fr);gap:16px;align-items:start;margin-top:16px}
 .teamlist{padding:8px;position:sticky;top:68px;max-height:calc(100vh - 84px);overflow:auto}
 .tlgroup+.tlgroup{margin-top:8px;padding-top:8px;border-top:1px solid ${T.hairline}}
+/* The list scrolls on its own, so its search box stays put at the top of it. */
+.tlsearch{position:sticky;top:-8px;z-index:1;background:${T.surface};padding:2px 2px 8px;margin:-2px -2px 0}
+.tlsearch .search{max-width:none;padding:3px 10px}
+.tlhit{display:block;font-size:11px;color:var(--accent);margin-top:1px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
 .teamrow{display:flex;align-items:flex-start;gap:9px;width:100%;text-align:left;padding:8px 10px;border-radius:10px;min-height:44px}
 .teamrow:hover{background:${T.paper}}
 .teamrow.on{background:${T.paper};outline:1px solid ${T.hairline};outline-offset:-1px}
@@ -114,18 +120,6 @@ const STYLE = `
 .teamcols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;align-items:start}
 .teamcols>div{display:flex;flex-direction:column;gap:14px;min-width:0}
 .teamfoot{display:flex;justify-content:flex-end}
-.fundrow{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-end}
-/* Check-ins: date and actions on one line, the note full width beneath. */
-.checkin{padding:10px 0;border-bottom:1px solid ${T.hairline}}
-.checkin:last-child{border-bottom:none}
-.checkin-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap}
-/* The fold: padding on the frame, the four-line clamp on the text inside, so
-   no sliver of a fifth line shows through. */
-.gcs .notepreview{display:block;width:100%;text-align:left;padding:8px 11px;border:1px solid ${T.hairline};border-radius:9px;
-  background:${T.surface};cursor:pointer}
-.gcs .notepreview:hover{border-color:var(--accent)}
-.notepreview .clamp{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;
-  white-space:pre-wrap;font-size:13px;line-height:1.5;color:${T.ink}}
 .mini.danger{color:#B42318;border-color:${T.dangerTint}}
 @media(max-width:1279px){.teamcols{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:1000px){.workspace{grid-template-columns:minmax(0,1fr)}.teamlist{position:static;max-height:260px}}
@@ -1346,7 +1340,7 @@ export default function App() {
         : (accentObj ? accentObj.id : "regular")),
     members: "", dept: "", supervisor: "", mentor: "", finance: "pending", notes: "",
     budget: "", spent: "", status: "active",
-    meetings: [], deliverables: [], links: [], docs: {},
+    payments: [], meetings: [], deliverables: [], links: [], docs: {},
   });
   const missingProfiles = teams.filter(
     (t) => t.outcome === "select" && !profiles.some((p) => p.teamId === t.id || (p.name && p.name === t.name))
@@ -1373,6 +1367,22 @@ export default function App() {
     updProfile(pid, { [key]: [...(profiles.find((p) => p.id === pid)?.[key] || []), { id: uid(), ...blank }] });
   const rmSub = (pid, key, subId) =>
     updProfile(pid, { [key]: (profiles.find((p) => p.id === pid)?.[key] || []).filter((x) => x.id !== subId) });
+  /* Opening the payments ledger carries over whatever single figure was typed
+     into "Paid out" as its first row, so itemising never quietly replaces a
+     number that was already on file. */
+  const addPayment = (pid, blank) => {
+    const p = profiles.find((x) => x.id === pid);
+    if (!p) return;
+    const rows = p.payments || [];
+    const lump = Number(p.spent) || 0;
+    const opening = lump > 0 && !rows.length
+      ? [{ id: uid(), date: "", amount: lump, note: "Recorded before this was itemised" }]
+      : [];
+    updProfile(pid, {
+      payments: [...rows, ...opening, { id: uid(), ...blank }],
+      ...(opening.length ? { spent: "" } : null),  // the lump sum now lives in the row
+    });
+  };
   /* The same deliverable for many teams at once — most are cohort-wide. */
   const withDeliverable = (rec, title, due) =>
     ({ ...rec, deliverables: [...(rec.deliverables || []), { id: uid(), title, due, status: "pending", note: "" }] });
@@ -1459,6 +1469,7 @@ export default function App() {
   const p2Filter = p2Cohorts.includes(p2CohortFilter) ? p2CohortFilter : "all";
   const visibleP2 = p2Filter === "all" ? p2Teams : p2Teams.filter((p) => p2CohortOf(p) === p2Filter);
   const activeP2 = visibleP2.find((p) => p.id === activeP2Id) || visibleP2[0] || null;
+  const p2Paid = ledgerTotal;
   const p2Owed = useMemo(() => deliverableSummary(p2Teams), [p2Teams]);
   const shownP2Owed = useMemo(() => deliverableSummary(visibleP2), [visibleP2]);
   const updP2 = (id, patch) => setPhase2((ps) => ps.map((p) => (p.id === id ? { ...p, ...patch } : p)));
@@ -1789,25 +1800,19 @@ export default function App() {
   /* Seed-year money. Phase I teams are given a budget through their Financial
      Services account; until now the screen recorded only whether that account
      was open, not what was in it. Profiles saved before this have neither
-     field, so both read as zero. */
+     field, so both read as zero.
+
+     What has been paid out of that budget is itemised exactly as Phase II
+     itemises its payments. A team with no rows yet falls back to the single
+     figure that used to be typed in — stored as `spent`, the name it has
+     always had — so nothing recorded before this reads as zero. */
   const budgetOf = (p) => Number(p.budget) || 0;
-  /* Award → given → spent across a set of teams; a team that withdrew no
-     longer counts toward the money. Both phases read it the same way. */
-  const moneyTotals = (list, awardKey) => list.filter(isFunded).reduce((a, p) => {
-    const award = Number(p[awardKey]) || 0, given = givenOf(p), spent = Number(p.spent) || 0;
-    return {
-      ...a, awarded: a.awarded + award, given: a.given + given, spent: a.spent + spent,
-      withAward: a.withAward + (award > 0 ? 1 : 0), overspent: a.overspent + (spent > given ? 1 : 0),
-    };
-  }, { running: list.filter(isRunning).length, awarded: 0, given: 0, spent: 0, withAward: 0, overspent: 0 });
-  const moneyFigures = (m, scope) => [
-    { n: m.running, l: `Teams running${scope ? ` in ${scope}` : ""}` },
-    { n: `$${m.awarded.toLocaleString()}`, l: `Awarded · ${m.withAward} team${m.withAward === 1 ? "" : "s"}` },
-    { n: `$${m.given.toLocaleString()}`, l: m.awarded > m.given ? `Given · $${(m.awarded - m.given).toLocaleString()} still to give` : "Given to teams" },
-    { n: `$${m.spent.toLocaleString()}`, l: m.overspent ? `Spent · ${m.overspent} team${m.overspent === 1 ? "" : "s"} over what was given` : "Spent by teams",
-      tone: m.overspent ? T.danger : undefined },
-  ];
-  const seedTotals = moneyTotals(profiles, "budget");
+  const hasLedger = (p) => ((p && p.payments) || []).length > 0;
+  const paidOf = (p) => (hasLedger(p) ? ledgerTotal(p) : Number(p.spent) || 0);
+  const seedTotals = profiles.filter(isFunded).reduce(
+    (a, p) => ({ allocated: a.allocated + budgetOf(p), paid: a.paid + paidOf(p) }),
+    { allocated: 0, paid: 0 }
+  );
   /* Excel export of the viewed cycle, for reporting upward. Built by a pure
      function in lib/exportWorkbook; this only gathers what is on screen. */
   const exportExcel = () => {
@@ -1825,7 +1830,17 @@ export default function App() {
       ui.alert(`Couldn't build the Excel file: ${e.message}`);
     }
   };
-  const p2Totals = moneyTotals(phase2.filter(isRunning), "awarded");
+  const p2Totals = phase2.filter(isRunning).reduce(
+    (a, p) => ({ awarded: a.awarded + (Number(p.awarded) || 0), paid: a.paid + p2Paid(p) }),
+    { awarded: 0, paid: 0 }
+  );
+  const cohortBudget = visibleProfiles.filter(isFunded).reduce(
+    (a, p) => {
+      const b = budgetOf(p), sp = paidOf(p);
+      return { allocated: a.allocated + b, paid: a.paid + sp, withBudget: a.withBudget + (b > 0 ? 1 : 0), over: a.over + (b > 0 && sp > b ? 1 : 0) };
+    },
+    { allocated: 0, paid: 0, withBudget: 0, over: 0 }
+  );
   const filteredCallName = (() => {
     if (profileCallFilter === "all") return "";
     const hit = teamFilterGroups.find((g) => g.call.id === profileCallFilter);
@@ -1965,6 +1980,35 @@ export default function App() {
     if (!(await confirmDelete(q.title ? `“${q.title}”` : "this Q&A", !!(q.title || q.date || q.room)))) return;
     setPizza((ps) => ps.filter((_, j) => j !== i));
   };
+  /* Taking a team out of the pipeline. One routine, so the list row and the
+     board card ask the same question and say the same thing. */
+  const removeTeam = async (t) => {
+    const ok = await ui.confirm(
+      "It is removed from the selection pipeline. A Phase I team already set up from it is kept.",
+      { title: `Remove ${t.name || "this team"}?`, confirmLabel: "Remove", danger: true }
+    );
+    if (!ok) return false;
+    setTeams((ts) => ts.filter((x) => x.id !== t.id));
+    return true;
+  };
+  /* Removing a call: offered on its card under Calls & promo, and on the
+     Selection filter, where an unwanted call is what is actually in the way.
+     Teams under it are never deleted with it — they fall to "Unassigned". */
+  const removeCall = async (c) => {
+    if (!c || c.fixed || c.id === UNASSIGNED) return;
+    const attached = teams.filter((t) => callFor(t, callList).id === c.id).length
+      + profileRows.filter((pr) => pr.callId === c.id).length;
+    const ok = await ui.confirm(
+      attached
+        ? `${attached} team${attached === 1 ? "" : "s"} sit under this call. They are kept, but move to an “Unassigned” group in Selection and Teams until you put them in another call.`
+        : "Class visits advertised under this call lose their tag.",
+      { title: `Remove the ${c.name} call?`, confirmLabel: "Remove", danger: true }
+    );
+    if (!ok) return;
+    setCallList((cs) => cs.filter((x) => x.id !== c.id));
+    if (callFilter === c.id) setCallFilter("all");
+    if (profileCallFilter === c.id) setProfileCallFilter("all");
+  };
   const updCall = (id, patch) => setCallList((cs) => cs.map((c) => (c.id === id ? { ...c, ...patch } : c)));
   const updRoad = (i, patch) => setRoad((r) => r.map((t, j) => (j === i ? { ...t, ...patch } : t)));
   const addRoad = () => setRoad((r) => [...r, { rid: uid(), team: "", lastSeen: "—", runs: 0, status: "notstarted", note: "" }]);
@@ -2011,6 +2055,21 @@ export default function App() {
   }, [cohortData]);
   const updTeam = (ci, ti, patch) => setCohortData((cd) => cd.map((co, a) => (a === ci ? { ...co, teams: co.teams.map((t, b) => (b === ti ? { ...t, ...patch } : t)) } : co)));
   const rmTeam = (ci, ti) => setCohortData((cd) => cd.map((co, a) => (a === ci ? { ...co, teams: co.teams.filter((_, b) => b !== ti) } : co)));
+  /* A cohort published by mistake — or a trial run — could only be emptied
+     team by team, and an empty one still sat in the library and its filter. */
+  const rmCohort = async (ci) => {
+    const co = cohortData[ci];
+    if (!co) return;
+    const n = (co.teams || []).length;
+    const ok = await ui.confirm(
+      n ? `Its ${n} team${n === 1 ? "" : "s"} go with it. Phase I and Phase II records for those teams are not touched.`
+        : "It holds no teams.",
+      { title: `Remove “${co.c || "this cohort"}” from the library?`, confirmLabel: "Remove", danger: true }
+    );
+    if (!ok) return;
+    setCohortData((cd) => cd.filter((_, a) => a !== ci));
+    if (cohortFilter === co.c) setCohortFilter("all");
+  };
   const addTeam = (ci) => {
     const rid = uid();
     setCohortData((cd) => cd.map((co, a) => (a === ci ? { ...co, teams: [...co.teams, { rid, name: "", blurb: "", awards: [], phase2: false, note: "" }] } : co)));
@@ -2361,15 +2420,15 @@ export default function App() {
                   {/* Both phases now carry money; the landing page showed none of it. */}
                   <div className="card">
                     <div className="eyebrow" style={{ marginBottom: 10 }}>Funds</div>
-                    {seedTotals.awarded === 0 && p2Totals.awarded === 0 ? (
+                    {seedTotals.allocated === 0 && p2Totals.awarded === 0 ? (
                       <div style={{ color: T.muted, fontSize: 13 }}>No budgets or awards recorded yet.</div>
                     ) : (
                       <>
                         {[
-                          { key: "p1", label: "Phase I awards", scope: `cycle ${viewedCycle.label}`,
-                            used: seedTotals.given, total: seedTotals.awarded, spent: seedTotals.spent, verb: "given", go: "teams" },
+                          { key: "p1", label: "Phase I seed budgets", scope: `cycle ${viewedCycle.label}`,
+                            used: seedTotals.paid, total: seedTotals.allocated, verb: "paid out", go: "teams" },
                           { key: "p2", label: "Phase II awards", scope: "running teams",
-                            used: p2Totals.given, total: p2Totals.awarded, spent: p2Totals.spent, verb: "given", go: "phase2" },
+                            used: p2Totals.paid, total: p2Totals.awarded, verb: "paid out", go: "phase2" },
                         ].filter((r) => r.total > 0 || r.used > 0).map((r, i, arr) => {
                           const over = r.used > r.total;
                           const pct = r.total ? Math.min(Math.round((r.used / r.total) * 100), 100) : 0;
@@ -2379,11 +2438,11 @@ export default function App() {
                               <div className="callrow" style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 7 }}>
                                 <span style={{ fontWeight: 600, fontSize: 13 }}>{r.label} <span style={{ color: T.muted, fontWeight: 400, fontSize: 12 }}>· {r.scope}</span></span>
                                 <span className="mono nums" style={{ fontSize: 11.5, color: over ? T.danger : T.muted }}>
-                                  ${r.used.toLocaleString()} {r.verb} of ${r.total.toLocaleString()}{r.spent ? ` · $${r.spent.toLocaleString()} spent` : ""}
+                                  ${r.used.toLocaleString()} {r.verb} of ${r.total.toLocaleString()}
                                 </span>
                               </div>
                               <div className="track"><div style={{ width: pct + "%", background: over ? T.danger : accent }} /></div>
-                              {over && <div style={{ fontSize: 11.5, color: T.danger, marginTop: 4 }}>${(r.used - r.total).toLocaleString()} more {r.verb} than awarded</div>}
+                              {over && <div style={{ fontSize: 11.5, color: T.danger, marginTop: 4 }}>${(r.used - r.total).toLocaleString()} more {r.verb} than allocated</div>}
                             </button>
                           );
                         })}
@@ -2481,20 +2540,7 @@ export default function App() {
                     onEdit={() => setEditingCall(editingCall === c.id ? null : c.id)}
                     onChange={(patch) => updCall(c.id, patch)}
                     onOpen={() => { setCallFilter(c.id); setView("selection"); }}
-                    onRemove={c.fixed ? null : async () => {
-                      const attached = teams.filter((t) => callFor(t, callList).id === c.id).length
-                        + profileRows.filter((p) => p.callId === c.id).length;
-                      const ok = await ui.confirm(
-                        attached
-                          ? `${attached} team${attached === 1 ? "" : "s"} sit under this call. They are kept, but move to an “Unassigned” group in Selection and Teams until you put them in another call.`
-                          : "Class visits advertised under this call lose their tag.",
-                        { title: `Remove the ${c.name} call?`, confirmLabel: "Remove", danger: true }
-                      );
-                      if (!ok) return;
-                      setCallList((cs) => cs.filter((x) => x.id !== c.id));
-                      if (callFilter === c.id) setCallFilter("all");
-                      if (profileCallFilter === c.id) setProfileCallFilter("all");
-                    }} />
+                    onRemove={c.fixed ? null : () => removeCall(c)} />
                 ))}
                 <AddCallCard draft={draft} setDraft={setDraft} palette={PALETTE}
                   onAdd={() => {
@@ -2665,6 +2711,18 @@ export default function App() {
                     <span className="n">{ts.length}</span>
                   </button>
                 ))}
+                {/* A call added by mistake is noticed here, in the way, rather
+                    than on the Calls page — so it can go from here. */}
+                {(() => {
+                  const c = callList.find((x) => x.id === callFilter && !x.fixed);
+                  if (!c) return null;
+                  return (
+                    <button className="mini danger" onClick={() => removeCall(c)}
+                      title={`Remove the ${c.name} call — its teams are kept and move to Unassigned`}>
+                      <Trash2 size={11} style={{ verticalAlign: -1, marginRight: 4 }} />Remove this call
+                    </button>
+                  );
+                })()}
                 <div className="search" style={{ marginLeft: "auto", maxWidth: 260 }}>
                   <Search size={15} style={{ color: T.muted }} />
                   <input placeholder="Search teams…" value={teamQuery} onChange={(e) => setTeamQuery(e.target.value)} aria-label="Search teams" />
@@ -2755,10 +2813,8 @@ export default function App() {
                                     </select>
                                   </td>
                                   <td>
-                                    <IconBtn title={`Delete ${t.name || "team"}`} onClick={async () => {
-                                      if (!(await ui.confirm("This removes the team from the selection pipeline.", { title: `Delete ${t.name || "this team"}?`, confirmLabel: "Delete", danger: true }))) return;
-                                      setTeams((ts) => ts.filter((x) => x.id !== t.id));
-                                    }}><Trash2 size={14} /></IconBtn>
+                                    <IconBtn title={`Remove ${t.name || "team"} from the pipeline`}
+                                      onClick={() => removeTeam(t)}><Trash2 size={14} /></IconBtn>
                                   </td>
                                 </tr>
                               ))}
@@ -2804,9 +2860,12 @@ export default function App() {
                                     {totalScore(t, JUDGES) != null ? `${totalScore(t, JUDGES)}/${MAX_SCORE}` : "—"}
                                   </span>
                                 </div>
-                                <div style={{ display: "flex", gap: 6, marginTop: 9 }}>
+                                <div style={{ display: "flex", gap: 6, marginTop: 9, alignItems: "center" }}>
                                   <button className="mini" aria-label="Move to previous stage" style={{ flex: 1, opacity: si === 0 ? 0.35 : 1 }} disabled={si === 0} onClick={() => upd(t.id, { stage: STAGES[si - 1].id })}>←</button>
                                   <button className="mini" aria-label="Move to next stage" style={{ flex: 1, opacity: si === STAGES.length - 1 ? 0.35 : 1 }} disabled={si === STAGES.length - 1} onClick={() => upd(t.id, { stage: STAGES[si + 1].id })}>→</button>
+                                  {/* The list has a row delete; the board had none, so a
+                                      card dragged in by mistake could only go from the list. */}
+                                  <IconBtn title={`Remove ${t.name || "this team"} from the pipeline`} onClick={() => removeTeam(t)}><Trash2 size={13} /></IconBtn>
                                 </div>
                               </div>
                             );
@@ -2823,11 +2882,14 @@ export default function App() {
           {view === "teams" && (() => {
             const p1Items = trackerItems || [];
             const p1Follow = trackerSummary(profiles, p1Items).followup;
+            /* How the open team's money is kept: itemised under Payments, or
+               still the single figure typed in before that card existed. */
+            const p1PayN = activeProfile ? (activeProfile.payments || []).length : 0;
             const openP1 = (pid) => { setActiveProfileId(pid); setProfileCallFilter("all"); setTeamsTab("profiles"); };
             return (
             <>
               <PageHead title={`Phase I teams · cycle ${viewedCycle.label}`}
-                sub="The seed year, from kickoff to Demo Day: each team's people, award and payments, documents, deliverables and monthly check-ins. Teams funded at Demo Day carry on under Phase II teams." />
+                sub="The seed year, from kickoff to Demo Day: each team's people, seed budget, documents, deliverables and monthly check-ins. Teams funded at Demo Day carry on under Phase II teams." />
               <PhaseTabs tab={teamsTab} onTab={setTeamsTab} owed={deliverables} followups={p1Follow}
                 onAdd={() => { const p = blankProfile(null); setProfiles((ps) => [...ps, p]); setTeamsTab("profiles"); setActiveProfileId(p.id); }}
                 filter={{
@@ -2872,7 +2934,14 @@ export default function App() {
                 </div>
               ) : (
                 <>
-                  <Figures items={moneyFigures(moneyTotals(visibleProfiles, "budget"), profileCallFilter !== "all" ? filteredCallName : "")} />
+                  <Figures items={[
+                    { n: visibleProfiles.filter(isRunning).length, l: `Teams running${profileCallFilter !== "all" ? ` in ${filteredCallName}` : ""}` },
+                    { n: `$${cohortBudget.allocated.toLocaleString()}`, l: `Seed budgets · ${cohortBudget.withBudget} team${cohortBudget.withBudget === 1 ? "" : "s"}` },
+                    { n: `$${cohortBudget.paid.toLocaleString()}`, l: "Paid out so far" },
+                    { n: `$${Math.max(cohortBudget.allocated - cohortBudget.paid, 0).toLocaleString()}`,
+                      l: cohortBudget.over > 0 ? `Still to pay · ${cohortBudget.over} over budget` : "Still to pay",
+                      tone: cohortBudget.over > 0 ? T.danger : undefined },
+                  ]} />
 
                   {visibleProfiles.length === 0 ? (
                     <div className="card" style={{ marginTop: 16, color: T.muted, fontSize: 13.5 }}>
@@ -2881,7 +2950,7 @@ export default function App() {
                   ) : (
                     <div className="workspace">
                       <TeamList activeId={activeProfile && activeProfile.id} onPick={setActiveProfileId}
-                        moneyOf={(p) => ({ granted: budgetOf(p), used: givenOf(p) })}
+                        moneyOf={(p) => ({ granted: budgetOf(p), used: paidOf(p) })}
                         groups={shownProfileGroups.map(({ call, teams: ps }) => ({
                           id: call.id, accent: call.accent, teams: ps,
                           label: call.id === UNASSIGNED ? "Unassigned" : `${call.name} call`,
@@ -2907,24 +2976,53 @@ export default function App() {
                             <div>
                               <PeopleCard rec={activeProfile} onChange={(patch) => updProfile(activeProfile.id, patch)}
                                 membersHint="No members yet, so this team won't appear on attendance lists or in Contacts." />
+                              <FundingBlock grantedLabel="Seed budget" granted={budgetOf(activeProfile)}
+                                usedLabel="Paid out" used={paidOf(activeProfile)}
+                                footnote={p1PayN
+                                  ? ledgerNote(activeProfile)
+                                  : "drawn from the team's Financial Services account — record each payment under Payments"}
+                                grantedInput={
+                                  <span className="moneyfield"><span className="cur">$</span>
+                                    <EInput value={activeProfile.budget} mono w="86px" placeholder="0" ariaLabel="Seed-year budget"
+                                      onChange={(v) => updProfile(activeProfile.id, { budget: money(v) })} />
+                                  </span>
+                                }
+                                usedInput={p1PayN ? (
+                                  /* Itemised: the figure is the ledger's total, read here and
+                                     changed under Payments, exactly as in Phase II. */
+                                  <span className="mono" title="The total of the payments recorded — change it under Payments"
+                                    style={{ display: "inline-block", fontSize: 13, padding: "6px 2px",
+                                             color: paidOf(activeProfile) > budgetOf(activeProfile) ? T.danger
+                                               : budgetOf(activeProfile) > 0 && paidOf(activeProfile) >= budgetOf(activeProfile) ? T.ok : T.ink }}>
+                                    ${paidOf(activeProfile).toLocaleString()}
+                                  </span>
+                                ) : (
+                                  /* Nothing itemised yet: the single figure teams were given
+                                     before this ledger existed stays readable and editable. */
+                                  <span className={"moneyfield" + (budgetOf(activeProfile) > 0 && paidOf(activeProfile) === 0 ? " empty" : "")}
+                                    title={budgetOf(activeProfile) > 0 && paidOf(activeProfile) === 0 ? "Nothing paid out yet" : undefined}>
+                                    <span className="cur">$</span>
+                                    <EInput value={activeProfile.spent} mono w="86px" placeholder="0" ariaLabel="Paid out"
+                                      onChange={(v) => updProfile(activeProfile.id, { spent: money(v) })} />
+                                  </span>
+                                )} />
+                              <PaymentsCard rec={activeProfile}
+                                onAdd={(blank) => addPayment(activeProfile.id, blank)}
+                                onUpd={(id, patch) => updSub(activeProfile.id, "payments", id, patch)}
+                                onRm={(id) => rmSub(activeProfile.id, "payments", id)} />
                               <Section title="Documents"><TeamDocs rec={activeProfile} onChange={(patch) => updProfile(activeProfile.id, patch)} bare /></Section>
                             </div>
                             <div>
-                              <FundingCard rec={activeProfile} awardKey="budget" awardLabel="Award"
-                                onChange={(patch) => updProfile(activeProfile.id, patch)}
-                                onAddPay={(blank) => addSub(activeProfile.id, "payments", blank)}
-                                onUpdPay={(id, patch) => updSub(activeProfile.id, "payments", id, patch)}
-                                onRmPay={(id) => rmSub(activeProfile.id, "payments", id)} />
                               <DeliverablesCard items={activeProfile.deliverables}
                                 onAdd={(blank) => addSub(activeProfile.id, "deliverables", blank)}
                                 onUpd={(id, patch) => updSub(activeProfile.id, "deliverables", id, patch)}
                                 onRm={(id) => rmSub(activeProfile.id, "deliverables", id)} />
+                              <CheckinsCard rec={activeProfile}
+                                onAdd={(blank) => addSub(activeProfile.id, "meetings", blank)}
+                                onUpd={(id, patch) => updSub(activeProfile.id, "meetings", id, patch)}
+                                onRm={(id) => rmSub(activeProfile.id, "meetings", id)} />
                             </div>
                           </div>
-                          <CheckinsCard rec={activeProfile}
-                            onAdd={(blank) => addSub(activeProfile.id, "meetings", blank)}
-                            onUpd={(id, patch) => updSub(activeProfile.id, "meetings", id, patch)}
-                            onRm={(id) => rmSub(activeProfile.id, "meetings", id)} />
                           <Section title="Notes">
                             <NoteField value={activeProfile.notes} onChange={(v) => updProfile(activeProfile.id, { notes: v })} label="Notes"
                               placeholder="Anything worth remembering — context, risks, decisions, who said what. Grows as you type." minRows={4} />
@@ -3551,7 +3649,10 @@ export default function App() {
                             <span className="disp" style={{ fontWeight: 700, fontSize: 16 }}>{co.c}</span>
                             <span className="mono" style={{ fontSize: 12, color: T.muted }}>{co.year}</span>
                             <span className="mono" style={{ fontSize: 11, color: T.muted }}>· {co.teams.length} team{co.teams.length === 1 ? "" : "s"}</span>
-                            <button className="btn ghost" style={{ marginLeft: "auto", fontSize: 11.5, padding: "5px 10px" }} onClick={() => setEditTeam(addTeam(ci))}><Plus size={13} /> Add team</button>
+                            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+                              <button className="btn ghost" style={{ fontSize: 11.5, padding: "5px 10px" }} onClick={() => setEditTeam(addTeam(ci))}><Plus size={13} /> Add team</button>
+                              <IconBtn title={`Remove “${co.c}” from the library`} onClick={() => rmCohort(ci)}><Trash2 size={14} /></IconBtn>
+                            </div>
                           </div>
                           <div className="scards">
                             {visible.map(({ t, ti }) => (
@@ -3565,7 +3666,11 @@ export default function App() {
                                     rmTeam(ci, ti); setEditTeam(null);
                                   }} />
                               ) : (
-                                <TeamCard key={t.rid || `${ci}-${ti}`} t={t} phase2={inPhase2(t)} onEdit={() => setEditTeam(t.rid)} />
+                                <TeamCard key={t.rid || `${ci}-${ti}`} t={t} phase2={inPhase2(t)} onEdit={() => setEditTeam(t.rid)}
+                                  onRemove={async () => {
+                                    if (!(await ui.confirm("It is removed from the success library.", { title: `Remove ${t.name || "this team"}?`, confirmLabel: "Remove", danger: true }))) return;
+                                    rmTeam(ci, ti);
+                                  }} />
                               )
                             ))}
                           </div>
@@ -3656,14 +3761,25 @@ export default function App() {
                   No Phase II teams yet. They come from the teams awarded Phase II at Demo Day, or add one with “Add team”.
                 </div>
               ) : (() => {
-                const m = moneyTotals(visibleP2, "awarded");
+                const funded = visibleP2.filter(isFunded);
+                const withAward = funded.filter((p) => Number(p.awarded) > 0).length;
+                const totAwarded = funded.reduce((s, p) => s + (Number(p.awarded) || 0), 0);
+                const totPaid = funded.reduce((s, p) => s + p2Paid(p), 0);
+                const toPay = visibleP2.filter(isRunning).reduce((s, p) => s + Math.max((Number(p.awarded) || 0) - p2Paid(p), 0), 0);
+                const paid = activeP2 ? p2Paid(activeP2) : 0;
+                const awarded = activeP2 ? Number(activeP2.awarded) || 0 : 0;
                 return (
                   <>
-                    <Figures items={moneyFigures(m, p2Filter !== "all" ? p2Filter : "")} />
+                    <Figures items={[
+                      { n: visibleP2.filter(isRunning).length, l: `Teams running${p2Filter !== "all" ? ` in ${p2Filter}` : ""}` },
+                      { n: `$${totAwarded.toLocaleString()}`, l: `Awarded · ${withAward} team${withAward === 1 ? "" : "s"}` },
+                      { n: `$${totPaid.toLocaleString()}`, l: "Paid out so far" },
+                      { n: `$${toPay.toLocaleString()}`, l: "Still to pay" },
+                    ]} />
 
                     <div className="workspace">
                       <TeamList activeId={activeP2 && activeP2.id} onPick={setActiveP2Id}
-                        moneyOf={(p) => ({ granted: Number(p.awarded) || 0, used: givenOf(p) })}
+                        moneyOf={(p) => ({ granted: Number(p.awarded) || 0, used: p2Paid(p) })}
                         groups={(p2Filter === "all" ? p2Cohorts : [p2Filter]).map((c) => ({
                           id: c, label: c, accent: T.burgundy, teams: p2Teams.filter((p) => p2CohortOf(p) === c),
                         }))} />
@@ -3683,24 +3799,38 @@ export default function App() {
                             <div>
                               <PeopleCard rec={activeP2} onChange={(patch) => updP2(activeP2.id, patch)}
                                 membersHint="No members yet, so nobody on this team appears in Contacts." />
+                              <FundingBlock grantedLabel="Award ($/yr)" granted={awarded}
+                                usedLabel="Paid out" used={paid}
+                                warning={awarded > MAX_AWARD ? `above the $${MAX_AWARD.toLocaleString()}/yr maximum` : null}
+                                footnote={ledgerNote(activeP2)}
+                                grantedInput={
+                                  <span className="moneyfield"><span className="cur">$</span>
+                                    <EInput value={activeP2.awarded} onChange={(v) => updP2(activeP2.id, { awarded: money(v) })} placeholder="0" mono w="86px" ariaLabel="Award amount" />
+                                  </span>
+                                }
+                                usedInput={
+                                  <span className="mono" title="The total of the payments recorded — change it under Payments"
+                                    style={{ display: "inline-block", fontSize: 13, padding: "6px 2px", color: awarded > 0 && paid >= awarded ? T.ok : T.ink }}>
+                                    ${paid.toLocaleString()}
+                                  </span>
+                                } />
+                              <PaymentsCard rec={activeP2}
+                                onAdd={(blank) => addP2Sub(activeP2.id, "payments", blank)}
+                                onUpd={(id, patch) => updP2Sub(activeP2.id, "payments", id, patch)}
+                                onRm={(id) => rmP2Sub(activeP2.id, "payments", id)} />
                               <Section title="Documents"><TeamDocs rec={activeP2} onChange={(patch) => updP2(activeP2.id, patch)} bare /></Section>
                             </div>
                             <div>
-                              <FundingCard rec={activeP2} awardKey="awarded" awardLabel="Award ($/yr)" maxAward={MAX_AWARD}
-                                onChange={(patch) => updP2(activeP2.id, patch)}
-                                onAddPay={(blank) => addP2Sub(activeP2.id, "payments", blank)}
-                                onUpdPay={(id, patch) => updP2Sub(activeP2.id, "payments", id, patch)}
-                                onRmPay={(id) => rmP2Sub(activeP2.id, "payments", id)} />
                               <DeliverablesCard items={activeP2.deliverables}
                                 onAdd={(blank) => addP2Sub(activeP2.id, "deliverables", blank)}
                                 onUpd={(id, patch) => updP2Sub(activeP2.id, "deliverables", id, patch)}
                                 onRm={(id) => rmP2Sub(activeP2.id, "deliverables", id)} />
+                              <CheckinsCard rec={activeP2}
+                                onAdd={(blank) => addP2Sub(activeP2.id, "meetings", blank)}
+                                onUpd={(id, patch) => updP2Sub(activeP2.id, "meetings", id, patch)}
+                                onRm={(id) => rmP2Sub(activeP2.id, "meetings", id)} />
                             </div>
                           </div>
-                          <CheckinsCard rec={activeP2}
-                            onAdd={(blank) => addP2Sub(activeP2.id, "meetings", blank)}
-                            onUpd={(id, patch) => updP2Sub(activeP2.id, "meetings", id, patch)}
-                            onRm={(id) => rmP2Sub(activeP2.id, "meetings", id)} />
                           <Section title="Notes">
                             <NoteField value={activeP2.note} onChange={(v) => updP2(activeP2.id, { note: v })} label="Notes"
                               placeholder="Anything worth remembering — context, risks, decisions, who said what. Grows as you type." minRows={4} />
@@ -3801,7 +3931,7 @@ function Alert({ icon, text, cta, onClick, accent, last, tone }) {
     </div>
   );
 }
-function TeamCard({ t, phase2, onEdit }) {
+function TeamCard({ t, phase2, onEdit, onRemove }) {
   return (
     <div className="card" style={{ padding: 15 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
@@ -3809,6 +3939,7 @@ function TeamCard({ t, phase2, onEdit }) {
         <div style={{ display: "flex", gap: 6, alignItems: "center", flex: "0 0 auto" }}>
           {phase2 && <Pill bg={T.tint} fg={T.burgundy}>Phase II</Pill>}
           <IconBtn onClick={onEdit} title="Edit team"><Pencil size={13} /></IconBtn>
+          {onRemove && <IconBtn onClick={onRemove} title={`Remove ${t.name || "this team"} from the library`}><Trash2 size={13} /></IconBtn>}
         </div>
       </div>
       <div style={{ color: T.muted, fontSize: 12.5, marginTop: 6, lineHeight: 1.45 }}>{t.blurb}</div>
@@ -4011,15 +4142,47 @@ const kMoney = (n) => (n >= 1000 ? `$${(Math.round(n / 100) / 10).toLocaleString
 
 /** The teams, as a list beside the team in view. Each row carries what needs
     chasing — worst deliverable, at risk, a quiet spell — without opening it. */
+/** The team list down the side of both phases. It carries a search, because
+    the question is as often "which team is this person on?" as it is "where
+    is this team?" — and nobody should have to open teams one by one to find
+    out. Matching is on the team's name and on anyone in its member list. */
 function TeamList({ groups, activeId, onPick, moneyOf }) {
+  const [q, setQ] = useState("");
+  const needle = q.trim().toLowerCase();
+  const match = (p) => {
+    if (!needle) return { ok: true, people: [] };
+    if ((p.name || "").toLowerCase().includes(needle)) return { ok: true, people: [] };
+    const people = parseMembers(p.members).filter(
+      (m) => m.name.toLowerCase().includes(needle) || m.email.toLowerCase().includes(needle)
+    );
+    return { ok: people.length > 0, people };
+  };
+  const shown = groups.map((g) => ({
+    ...g,
+    rows: g.teams.map((p) => ({ p, hit: match(p) })).filter((x) => x.hit.ok),
+  }));
+  const found = shown.reduce((n, g) => n + g.rows.length, 0);
   return (
     <nav className="card teamlist" aria-label="Teams">
-      {groups.map(({ id, label, accent, teams }) => {
-        if (!teams.length) return null;
+      <div className="tlsearch">
+        <div className="search">
+          <Search size={14} style={{ color: T.muted, flex: "0 0 auto" }} />
+          <input value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search teams or members"
+            placeholder="Search a team or a member…" />
+          {q && <IconBtn title="Clear the search" onClick={() => setQ("")}><X size={13} /></IconBtn>}
+        </div>
+      </div>
+      {needle && found === 0 && (
+        <div style={{ color: T.muted, fontSize: 12.5, padding: "6px 10px 10px" }}>
+          No team or member matches “{q.trim()}”.
+        </div>
+      )}
+      {shown.map(({ id, label, accent, rows }) => {
+        if (!rows.length) return null;
         return (
           <div key={id} className="tlgroup">
-            <div className="eyebrow" style={{ color: accent, padding: "4px 10px 6px" }}>{label} · {teams.length}</div>
-            {[...teams].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map((p) => {
+            <div className="eyebrow" style={{ color: accent, padding: "4px 10px 6px" }}>{label} · {rows.length}</div>
+            {[...rows].sort((a, b) => (a.p.name || "").localeCompare(b.p.name || "")).map(({ p, hit }) => {
               const st = statusOf(p);
               const running = isRunning(p);
               const worst = running ? profileDeliverableState(p) : null;
@@ -4039,8 +4202,13 @@ function TeamList({ groups, activeId, onPick, moneyOf }) {
                     <span className="tname" style={st.id === "withdrawn" ? { textDecoration: "line-through", color: T.muted } : undefined}>{p.name || "Untitled"}</span>
                     <span className="tmeta">
                       {st.id !== "active" ? st.label : running && cin.stale ? "check-in due" : "on track"}
-                      {m.granted > 0 ? ` · ${kMoney(m.used)} of ${kMoney(m.granted)} given` : ""}
+                      {m.granted > 0 ? ` · ${kMoney(m.used)} of ${kMoney(m.granted)}` : ""}
                     </span>
+                    {/* Searching by person: say who on this team was matched,
+                        otherwise the list answers with a team name alone. */}
+                    {hit.people.length > 0 && (
+                      <span className="tlhit">{hit.people.map((x) => x.name || x.email).join(", ")}</span>
+                    )}
                   </span>
                 </button>
               );
@@ -4051,8 +4219,6 @@ function TeamList({ groups, activeId, onPick, moneyOf }) {
     </nav>
   );
 }
-
-/** Which team this is, how it is doing, and the settings that apply to all of it. */
 function TeamHeader({ rec, name, onName, onChange, groupControl, origin, followups }) {
   const st = statusOf(rec);
   const running = isRunning(rec);
@@ -4125,93 +4291,29 @@ function PeopleCard({ rec, onChange, membersHint }) {
   );
 }
 
-/** Award → given → spent, the same in both phases: what the team was awarded,
-    what we have paid them so far (the total of the payments below, never
-    typed), and what they have spent of it. */
-function FundingCard({ rec, awardKey, awardLabel, maxAward, onChange, onAddPay, onUpdPay, onRmPay }) {
-  const award = Number(rec[awardKey]) || 0;
-  const pays = rec.payments || [];
-  const given = givenOf(rec);
-  const spent = Number(rec.spent) || 0;
-  const blank = pays.filter((x) => !(Number(x.amount) > 0)).length;
-  const pct = (a, b) => (b ? Math.min(Math.round((a / b) * 100), 100) : 0);
-  const bar = (value, of, color) => (
-    <div className="track" style={{ marginTop: 6 }}><div style={{ width: pct(value, of) + "%", background: color }} /></div>
-  );
+/** What the team was given and what has gone out, laid out the same in both phases. */
+function FundingBlock({ grantedLabel, granted, grantedInput, usedLabel, used, usedInput, footnote, warning }) {
+  const over = Math.max(used - granted, 0);
+  const left = Math.max(granted - used, 0);
+  const pct = granted ? Math.min(Math.round((used / granted) * 100), 100) : 0;
   return (
-    <Section title="Funding" right={
-      <button className="mini" onClick={() => onAddPay({ date: todayISO(), amount: "", note: "" })}><Plus size={11} style={{ verticalAlign: -1 }} /> Payment</button>
-    }>
-      <div className="fundrow">
-        <div>
-          <div className="eyebrow" style={{ marginBottom: 3 }}>{awardLabel}</div>
-          <span className="moneyfield"><span className="cur">$</span>
-            <EInput value={rec[awardKey]} onChange={(v) => onChange({ [awardKey]: money(v) })} placeholder="0" mono w="86px" ariaLabel="Award" />
-          </span>
-        </div>
-        <div>
-          <div className="eyebrow" style={{ marginBottom: 3 }}>Given to team</div>
-          <span className="mono" title="The total of the payments below — add or change a payment to move it"
-            style={{ display: "inline-block", fontSize: 13.5, fontWeight: 600, padding: "6px 2px", color: award > 0 && given >= award ? T.ok : T.ink }}>
-            ${given.toLocaleString()}
-          </span>
-        </div>
-        <div>
-          <div className="eyebrow" style={{ marginBottom: 3 }}>Spent by team</div>
-          <span className={"moneyfield" + (given > 0 && spent === 0 ? " empty" : "")}
-            title={given > 0 && spent === 0 ? "Nothing recorded as spent yet" : "What the team has spent so far, from its Financial Services account"}>
-            <span className="cur">$</span>
-            <EInput value={rec.spent} onChange={(v) => onChange({ spent: money(v) })} placeholder="0" mono w="86px" ariaLabel="Spent by team" />
-          </span>
-        </div>
+    <Section title="Funding">
+      <div style={{ display: "flex", gap: 18, flexWrap: "wrap", alignItems: "flex-end" }}>
+        <div><div className="eyebrow" style={{ marginBottom: 3 }}>{grantedLabel}</div>{grantedInput}</div>
+        <div><div className="eyebrow" style={{ marginBottom: 3 }}>{usedLabel}</div>{usedInput}</div>
+        {warning && <span style={{ fontSize: 11.5, color: T.warnInk, paddingBottom: 6 }}>{warning}</span>}
       </div>
-      {maxAward && award > maxAward && (
-        <div style={{ fontSize: 11.5, color: T.warnInk, marginTop: 6 }}>Above the ${maxAward.toLocaleString()}/yr maximum.</div>
-      )}
-
-      {award > 0 && (
-        <div style={{ marginTop: 12 }}>
-          {bar(given, award, given > award ? T.danger : given === award ? T.ok : "var(--accent)")}
-          <div style={{ fontSize: 11.5, marginTop: 4, color: given > award ? T.danger : T.muted }}>
-            {given > award
-              ? `$${(given - award).toLocaleString()} more given than awarded`
-              : given === award ? "All of the award has been given"
-              : `Given $${given.toLocaleString()} of $${award.toLocaleString()} · $${(award - given).toLocaleString()} still to give`}
-          </div>
+      {granted > 0 && (
+        <div className="track" style={{ marginTop: 11 }}>
+          <div style={{ width: pct + "%", background: over > 0 ? T.danger : left === 0 ? T.ok : "var(--accent)" }} />
         </div>
       )}
-      {(given > 0 || spent > 0) && (
-        <div style={{ marginTop: 10 }}>
-          {bar(spent, given, spent > given ? T.danger : T.gold)}
-          <div style={{ fontSize: 11.5, marginTop: 4, color: spent > given ? T.danger : T.muted }}>
-            {given === 0
-              ? "Spending recorded, but no payment to the team yet — add the payments below"
-              : spent > given
-                ? `Spent $${(spent - given).toLocaleString()} more than has been given`
-                : `Spent $${spent.toLocaleString()} of the $${given.toLocaleString()} given · $${(given - spent).toLocaleString()} unspent`}
-          </div>
-        </div>
-      )}
-
-      <div className="eyebrow" style={{ margin: "16px 0 2px" }}>Payments to the team · {pays.length}</div>
-      {pays.length === 0 && <div style={{ color: T.muted, fontSize: 12.5, marginTop: 4 }}>None yet. Add one each time money is transferred to the team.</div>}
-      {blank > 0 && <div style={{ color: T.warnInk, fontSize: 11.5, marginTop: 4 }}>{blank} payment{blank === 1 ? " has" : "s have"} no amount — type it in the $ box.</div>}
-      {pays.map((pay) => (
-        <div key={pay.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "9px 0", borderBottom: `1px solid ${T.hairline}`, flexWrap: "wrap" }}>
-          <div style={{ flex: "0 0 auto", paddingTop: 1 }}>
-            <DateField value={pay.date} onChange={(v) => onUpdPay(pay.id, { date: v })} w="126px" title="Payment date" />
-          </div>
-          <span className={"moneyfield" + (Number(pay.amount) > 0 ? "" : " empty")}
-            title={Number(pay.amount) > 0 ? "Payment amount" : "How much was paid — without it this payment adds nothing to what was given"}>
-            <span className="cur">$</span>
-            <EInput value={pay.amount} onChange={(v) => onUpdPay(pay.id, { amount: money(v) })} placeholder="Amount" mono w="76px" ariaLabel="Payment amount" />
-          </span>
-          <div style={{ flex: "1 1 160px", minWidth: 0 }}>
-            <NoteField value={pay.note} onChange={(v) => onUpdPay(pay.id, { note: v })} placeholder="What it covers — tranche, milestone, conditions" minRows={1} label="Payment note" />
-          </div>
-          <IconBtn title="Remove payment" style={{ marginTop: 4 }} onClick={() => onRmPay(pay.id)}><Trash2 size={13} /></IconBtn>
-        </div>
-      ))}
+      <div style={{ fontSize: 11.5, marginTop: 5, color: over > 0 ? T.danger : T.muted }}>
+        {granted > 0 && (over > 0
+          ? `$${over.toLocaleString()} over · `
+          : left > 0 ? `$${left.toLocaleString()} of $${granted.toLocaleString()} remaining · ` : "All of it · ")}
+        {footnote}
+      </div>
     </Section>
   );
 }
@@ -4253,75 +4355,71 @@ function DeliverablesCard({ items, onAdd, onUpd, onRm }) {
   );
 }
 
-/** Check-in meetings, newest first, with how long it has been since the last
-    one. A written note folds to a short preview so a long meeting can't
-    swallow the page; "Show all" opens it to read or edit, "Fold" closes it. */
+/** Check-in meetings, with how long it has been since the last one. */
 function CheckinsCard({ rec, onAdd, onUpd, onRm }) {
-  const list = [...(rec.meetings || [])].sort((x, y) => String(y.date || "9999").localeCompare(String(x.date || "9999")));
+  const list = rec.meetings || [];
   const cin = lastCheckin(rec);
-  const [openIds, setOpenIds] = useState(() => new Set());
-  // Another team, a fresh start: its long notes open folded.
-  useEffect(() => { setOpenIds(new Set()); }, [rec.id]);
-  const toggle = (id, on) => setOpenIds((cur) => { const n = new Set(cur); (on ?? !n.has(id)) ? n.add(id) : n.delete(id); return n; });
-  const folded = list.filter((m) => isLongNote(m.note) && !openIds.has(m.id)).length;
   return (
-    <Section title={`Check-ins · ${list.length}`} right={
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        {isRunning(rec) && (
-          <span className="mono" style={{ fontSize: 10.5, color: cin.stale ? T.warnInk : T.muted }}
-            title={cin.stale ? `More than ${CHECKIN_DAYS} days without a check-in` : undefined}>
-            last: {cin.label.toLowerCase()}
-          </span>
-        )}
-        {list.some((m) => isLongNote(m.note)) && (
-          <button className="mini" onClick={() => setOpenIds(folded ? new Set(list.map((m) => m.id)) : new Set())}>
-            {folded ? "Show all notes" : "Fold all notes"}
-          </button>
-        )}
-        <button className="mini" onClick={() => onAdd({ date: todayISO(), note: "" })}><Plus size={11} style={{ verticalAlign: -1 }} /> Check-in</button>
+    <div className="card">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, gap: 10, flexWrap: "wrap" }}>
+        <div className="eyebrow">Check-ins · {list.length}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {isRunning(rec) && (
+            <span className="mono" style={{ fontSize: 10.5, color: cin.stale ? T.warnInk : T.muted }}
+              title={cin.stale ? `More than ${CHECKIN_DAYS} days without a check-in` : undefined}>
+              last: {cin.label.toLowerCase()}
+            </span>
+          )}
+          <button className="mini" onClick={() => onAdd({ date: todayISO(), note: "" })}><Plus size={11} style={{ verticalAlign: -1 }} /> Check-in</button>
+        </div>
       </div>
-    }>
-      {list.length === 0 && <div style={{ color: T.muted, fontSize: 12.5 }}>No check-ins logged yet. Add one after each meeting with the team.</div>}
-      {list.map((m) => {
-        const long = isLongNote(m.note);
-        const open = !long || openIds.has(m.id);
-        const ago = daysUntil(m.date);
-        return (
-          <div key={m.id} className="checkin">
-            <div className="checkin-head">
-              <DateField value={m.date} onChange={(v) => onUpd(m.id, { date: v })} w="132px" title="Check-in date" />
-              {ago !== null && ago <= 0 && <span className="mono" style={{ fontSize: 10.5, color: T.muted }}>{lastCheckin({ meetings: [m] }).label.toLowerCase()}</span>}
-              <span style={{ marginLeft: "auto" }} />
-              {long && (
-                <button className="mini" onClick={() => toggle(m.id)} aria-expanded={open}>
-                  {open ? <><ChevronUp size={11} style={{ verticalAlign: -1 }} /> Fold</> : <><ChevronDown size={11} style={{ verticalAlign: -1 }} /> Show all</>}
-                </button>
-              )}
-              <IconBtn title="Remove check-in" onClick={() => onRm(m.id)}><Trash2 size={13} /></IconBtn>
-            </div>
-            {open ? (
-              /* A note being written never folds under the cursor: focusing it marks it open. */
-              <div onFocus={() => { if (!openIds.has(m.id)) toggle(m.id, true); }}>
-                <NoteField value={m.note} onChange={(v) => onUpd(m.id, { note: v })} label={`Notes for the check-in of ${m.date || "this meeting"}`}
-                  placeholder="Notes, decisions, action items — as long as you need" minRows={2}
-                  style={long ? { maxHeight: 420, overflowY: "auto" } : undefined} />
-              </div>
-            ) : (
-              <button className="notepreview" onClick={() => toggle(m.id, true)} title="Show the whole note to read or edit it">
-                <span className="clamp">{m.note}</span>
-              </button>
-            )}
+      {list.length === 0 && <div style={{ color: T.muted, fontSize: 12.5 }}>No check-ins logged yet.</div>}
+      {list.map((m) => (
+        <div key={m.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "9px 0", borderBottom: `1px solid ${T.hairline}` }}>
+          <div style={{ flex: "0 0 auto", paddingTop: 1 }}>
+            <DateField value={m.date} onChange={(v) => onUpd(m.id, { date: v })} w="126px" title="Check-in date" />
           </div>
-        );
-      })}
-    </Section>
+          <NoteField value={m.note} onChange={(v) => onUpd(m.id, { note: v })}
+            placeholder="Notes, decisions, action items — as long as you need" minRows={2} />
+          <IconBtn title="Remove check-in" style={{ marginTop: 4 }} onClick={() => onRm(m.id)}><Trash2 size={13} /></IconBtn>
+        </div>
+      ))}
+    </div>
   );
 }
-/** Long enough to fold: more than four lines, or a dense paragraph. */
-const isLongNote = (t) => !!t && (String(t).split("\n").length > 4 || String(t).length > 280);
 
-
-/** Give every running team in view the same deliverable in one go. */
+/** Phase II's tranche ledger: the disbursed figure is its total, never typed. */
+/** The money ledger both phases keep: dated rows with an amount and a note,
+    adding up to the figure shown under Funding — what the fund has paid a
+    team, against its Phase I seed budget or its Phase II award. */
+function PaymentsCard({ rec, onAdd, onUpd, onRm }) {
+  const list = rec.payments || [];
+  return (
+    <div className="card">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+        <div className="eyebrow">Payments · {list.length}</div>
+        <button className="mini" onClick={() => onAdd({ date: todayISO(), amount: "", note: "" })}><Plus size={11} style={{ verticalAlign: -1 }} /> Payment</button>
+      </div>
+      {list.length === 0 && <div style={{ color: T.muted, fontSize: 12.5 }}>No payments recorded yet.</div>}
+      {list.map((pay) => (
+        <div key={pay.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "9px 0", borderBottom: `1px solid ${T.hairline}`, flexWrap: "wrap" }}>
+          <div style={{ flex: "0 0 auto", paddingTop: 1 }}>
+            <DateField value={pay.date} onChange={(v) => onUpd(pay.id, { date: v })} w="126px" title="Payment date" />
+          </div>
+          <span className={"moneyfield" + (Number(pay.amount) > 0 ? "" : " empty")}
+            title={Number(pay.amount) > 0 ? "Payment amount" : "How much was paid — without it this payment adds nothing to the total"}>
+            <span className="cur">$</span>
+            <EInput value={pay.amount} onChange={(v) => onUpd(pay.id, { amount: money(v) })} placeholder="Amount" mono w="76px" ariaLabel="Payment amount" />
+          </span>
+          <div style={{ flex: "1 1 160px", minWidth: 0 }}>
+            <NoteField value={pay.note} onChange={(v) => onUpd(pay.id, { note: v })} placeholder="What it covers — tranche, milestone, conditions" minRows={1} />
+          </div>
+          <IconBtn title="Remove payment" style={{ marginTop: 4 }} onClick={() => onRm(pay.id)}><Trash2 size={13} /></IconBtn>
+        </div>
+      ))}
+    </div>
+  );
+}
 function AssignToAll({ count, onAssign }) {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");

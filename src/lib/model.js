@@ -91,9 +91,6 @@ export const isFunded = (p) => statusOf(p).id !== "withdrawn";
    ============================================================ */
 export const CHECKIN_DAYS = 35;
 
-/** Money paid to a team so far: the total of its payments ledger, never typed. */
-export const givenOf = (rec) => ((rec && rec.payments) || []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
-
 /** The most recent check-in on or before today, and how long ago it was. */
 export function lastCheckin(rec) {
   const past = ((rec && rec.meetings) || [])
@@ -239,6 +236,34 @@ export function trackerSummary(teams, items) {
     followup: cells.filter((c) => c.st === "followup").length,
     teamsFollowup: followTeams.size,
   };
+}
+
+/* ============================================================
+   Money ledgers
+
+   Both phases record money the same way: dated rows with an amount and a
+   note. Phase II pays an award out in tranches; Phase I spends a seed
+   budget held in the team's Financial Services account. One reader keeps
+   the two totals, the screens and the Excel export in agreement.
+   ============================================================ */
+/** Total of a team's money rows. Rows without an amount count as nothing. */
+export function ledgerTotal(rec) {
+  return ((rec && rec.payments) || []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+}
+
+/** Rows on file that carry no amount — they add nothing until one is typed. */
+export function ledgerBlanks(rec) {
+  return ((rec && rec.payments) || []).filter((x) => !(Number(x.amount) > 0)).length;
+}
+
+/** The line under a funding bar: where the figure above it came from. Both
+    phases say it the same way, from here, so the two cannot drift apart. */
+export function ledgerNote(rec) {
+  const n = ((rec && rec.payments) || []).length;
+  const blank = ledgerBlanks(rec);
+  if (!n) return "no payments recorded yet — add one under Payments";
+  if (blank) return `${blank} of ${n} payment${n === 1 ? "" : "s"} has no amount — type it in the $ box`;
+  return `total of ${n} payment${n === 1 ? "" : "s"} under Payments`;
 }
 
 export { ISO_RE };
