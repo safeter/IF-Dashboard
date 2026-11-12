@@ -8,6 +8,7 @@ import {
 import { supabase } from "./lib/supabase";
 import { T, PALETTE } from "./lib/theme";
 import { buildWorkbook, workbookName } from "./lib/exportWorkbook";
+import Dashboard from "./Dashboard";
 /* Every web font names a fallback. Without one, a blocked or slow Google Fonts
    request drops the stat figures, the wheel and every table header into the
    browser default — Times New Roman. */
@@ -20,12 +21,11 @@ const inkOn = (hex) => {
   const L = 0.2126 * r + 0.7152 * g + 0.0722 * b;
   return (1.05 / (L + 0.05)) >= 4.5 ? "#fff" : T.ink;
 };
-const DISP = "'Schibsted Grotesk', Inter, system-ui, -apple-system, 'Segoe UI', sans-serif";
-import { ui, DialogHost, NoteField, DateField, todayISO, fmtDate, safeUrl, linkHost } from "./lib/ui";
+import { ui, DialogHost, NoteField, DateField, todayISO, fmtDate, safeUrl, linkHost, daysUntil } from "./lib/ui";
 import {
   callFor, callGroups, matchCall, legacyCallId, UNASSIGNED,
   deliverableState, isOutstanding, deliverableSummary, profileDeliverableState, SOON_DAYS,
-  parseMembers, TEAM_STATUS, statusOf, isRunning, isFunded, rosterGaps, lastCheckin, CHECKIN_DAYS,
+  parseMembers, parseProgramDate, TEAM_STATUS, statusOf, isRunning, isFunded, rosterGaps, lastCheckin, CHECKIN_DAYS, teamHealth,
   JUDGE_MAX, judgeScores, hasBreakdown, totalScore, judgesIn,
   REQUIRED_DOCS, docsSummary, TRACK_STATUS, trackStatus, trackerSummary,
   ledgerTotal, ledgerNote,
@@ -36,7 +36,7 @@ import {
   UploadCloud, RefreshCw, CalendarCheck, Trophy, Pizza,
   CheckCircle2, Circle, Search, Award, Plus, Trash2, Pencil,
   ChevronDown, ChevronUp, Download, Upload, Settings, AlertTriangle, Users, BookOpen, Copy, Wallet,
-  PackageCheck, Inbox, ExternalLink, Ban, FileSpreadsheet, Mail, Printer,
+  PackageCheck, Inbox, ExternalLink, Ban, FileSpreadsheet, Mail, Printer, LogOut,
 } from "lucide-react";
 
 /* ============================================================
@@ -53,7 +53,10 @@ const STYLE = `
 .gcs button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
 .gcs :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
 .disp{font-family:'Schibsted Grotesk', Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;letter-spacing:-.02em}
-.mono{font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+.mono{font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-variant-numeric:tabular-nums}
+.gcs ::selection{background:${T.tint}}
+/* A link alone in a table cell is still something to tap. */
+.gcs td a.mono{display:inline-block;padding:5px 0}
 .eyebrow{font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:11px;letter-spacing:.14em;
   text-transform:uppercase;color:${T.muted}}
 
@@ -80,6 +83,106 @@ const STYLE = `
 .tabrow{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;
   margin-top:18px;padding-bottom:14px;border-bottom:1px solid ${T.hairline}}
 .btn.sm{font-size:12px;padding:6px 12px}
+
+/* ---------- dashboard ---------- */
+.cardhead{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;min-height:24px}
+.dashtop{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:16px;margin-top:20px;align-items:start}
+.dashbottom{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:16px;margin-top:16px;align-items:start}
+@media(max-width:1100px){.dashtop,.dashbottom{grid-template-columns:minmax(0,1fr)}}
+/* what needs me: each line is one button that opens the place to fix it */
+.gcs .attn{display:flex;align-items:center;gap:12px;width:100%;text-align:left;padding:10px 8px;margin:0 -8px;width:calc(100% + 16px);
+  border-radius:12px;border-top:1px solid ${T.hairline};transition:background .12s}
+.cardhead+.attn{border-top:none}
+.gcs .attn:hover{background:${T.paper}}
+.attnicon{display:grid;place-items:center;width:32px;height:32px;border-radius:10px;flex:0 0 32px}
+.attntext{flex:1;min-width:0}
+.attntitle{display:block;font-size:13.5px;font-weight:600;line-height:1.35}
+.attndetail{display:block;font-size:12px;color:${T.muted};margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.attncta{display:inline-flex;align-items:center;gap:5px;flex:0 0 auto;white-space:nowrap;font-size:12px;font-weight:600;
+  padding:6px 11px;border:1px solid ${T.hairline};border-radius:999px;background:${T.surface};color:${T.ink}}
+.attn:hover .attncta{border-color:var(--accent);color:var(--accent)}
+.gcs .attnmore{display:block;width:100%;text-align:left;font-size:12.5px;color:${T.muted};padding:11px 0 2px;border-top:1px solid ${T.hairline}}
+.gcs .attnmore:hover{color:${T.ink}}
+.clearline{display:flex;gap:6px;font-size:12px;color:${T.muted};padding-top:11px;margin-top:2px;border-top:1px solid ${T.hairline}}
+.allclear{display:flex;align-items:center;gap:13px;padding:14px 2px 8px}
+@media(max-width:560px){
+  /* On a phone the sentence gets the width; the arrow alone says "open". */
+  .gcs .attn{align-items:flex-start}
+  .attndetail{white-space:normal}
+  .attncta{border:none;padding:8px 0 0;background:none;color:${T.muted}}
+  .attncta .lbl{display:none}
+}
+/* where we are */
+.seasonhead{display:flex;gap:16px;align-items:center}
+.gcs .meter{display:block;width:100%;text-align:left;padding:5px 0;border-radius:8px}
+.meterhead{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:5px;flex-wrap:wrap}
+.meterlabel{font-size:13px;font-weight:600}
+.gcs .meter:hover .meterlabel,.gcs .moneyrow:hover .meterlabel{text-decoration:underline;text-underline-offset:3px;text-decoration-color:${T.hairline}}
+.gcs .meter .track,.gcs .moneyrow .track{display:block}
+.gcs .meter .track>span,.gcs .moneyrow .track>span,.hmoney .track>span{display:block;height:100%;border-radius:999px;transition:width .35s ease}
+.track.thin{display:block;height:4px;margin-top:4px;flex:none}
+/* what is coming */
+.gcs .upnext{display:flex;align-items:center;gap:12px;width:100%;text-align:left;padding:9px 6px;margin:0 -6px;border-radius:11px;
+  border-top:1px solid ${T.hairline}}
+.eyebrow+.upnext{border-top:none}
+.gcs .upnext:hover,.gcs .hrow:hover,.gcs .linerow:hover{background:${T.paper}}
+.dateblock{display:flex;flex-direction:column;align-items:center;justify-content:center;width:44px;height:46px;flex:0 0 44px;
+  border:1px solid ${T.hairline};border-radius:11px;background:${T.surface};color:${T.ink};line-height:1}
+.dateblock .dm{font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:${T.muted}}
+.dateblock .dd{font-size:18px;font-weight:700;margin-top:3px}
+.uptitle{display:block;font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.upsub{display:block;font-size:12px;color:${T.muted};margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.upwhen{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex:0 0 auto}
+.textlink{color:var(--accent);font-weight:600;text-decoration:underline;text-underline-offset:3px}
+/* figures that open the screen behind them */
+.gcs .figbtn .fig{text-align:left;border-radius:10px;transition:background .12s}
+.gcs .figbtn .fig:hover{background:${T.paper}}
+/* how is each team: one line per team, the same columns down the page */
+.hhead,.gcs .hrow{display:grid;grid-template-columns:minmax(170px,1.7fr) minmax(0,1.25fr) minmax(0,.95fr) minmax(0,.6fr) minmax(0,.9fr) minmax(0,1fr) 16px;
+  gap:14px;align-items:center}
+.hhead{font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:${T.muted};padding:4px 8px 8px;border-bottom:1px solid ${T.hairline}}
+.hgroup{margin-top:14px}
+.hgrouphead{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;padding:0 8px 4px}
+.gcs .hrow{width:100%;text-align:left;padding:9px 8px;border-radius:10px;border-top:1px solid ${T.hairline};font-size:12.5px}
+.hgrouphead+.hrow{border-top:none}
+.hteam{display:flex;align-items:flex-start;gap:9px;min-width:0}
+.hdot{width:9px;height:9px;border-radius:999px;flex:0 0 9px;margin-top:5px}
+.hname{display:block;font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hsub{display:block;font-size:11px;font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hflags{display:none;font-size:12px;margin-top:3px;line-height:1.4}
+.hcell{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
+.hmoney{font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:11.5px}
+.harrow{color:${T.muted};opacity:0;transition:opacity .12s}
+.hrow:hover .harrow,.hrow:focus-visible .harrow{opacity:1}
+/* Measured on the card itself, not the window: with the sidebar open a laptop
+   has less room than its width suggests. Too narrow for six columns, the row
+   becomes the team and one line saying what is wrong. */
+.hwrap{container-type:inline-size}
+@container (max-width:900px){
+  .hhead{display:none}
+  .gcs .hrow{grid-template-columns:minmax(0,1fr) 16px}
+  .hrow .hcell{display:none}
+  .hflags{display:block}
+  .harrow{opacity:1}
+}
+/* money and selection */
+.gcs .moneyrow{display:block;width:100%;text-align:left;padding:10px 0;border-top:1px solid ${T.hairline}}
+.cardhead+.moneyrow{border-top:none;padding-top:2px}
+.funnel{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;margin:4px 0 10px}
+.fstep{position:relative;padding:2px 10px 2px 14px;border-left:1px solid ${T.hairline};min-width:0}
+.fstep:first-child{border-left:none;padding-left:0}
+.fstep .fn{font-size:24px;font-weight:800;letter-spacing:-.03em;line-height:1.05}
+.fstep .fl{font-size:11.5px;color:${T.muted};margin-top:3px;line-height:1.3}
+.gcs .linerow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;width:100%;text-align:left;padding:9px 6px;margin:0 -6px;border-radius:10px;
+  border-top:1px solid ${T.hairline}}
+/* While the first read is on the wire the screens hold sample data; show a
+   calm placeholder instead of someone else's numbers. */
+.content.booting>:not(.boot){display:none}
+.boot{display:grid;gap:16px}
+.bone{border-radius:14px;background:linear-gradient(90deg,${T.hairline} 25%,#F4F0EB 37%,${T.hairline} 63%);background-size:400% 100%;animation:shimmer 1.4s ease infinite}
+@keyframes shimmer{0%{background-position:100% 50%}100%{background-position:0 50%}}
+@media(prefers-reduced-motion:reduce){.bone{animation:none}.gcs *{transition:none !important}}
 /* Headline figures: one quiet strip instead of a row of big tiles. */
 .figures{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));padding:14px 4px;margin-top:16px}
 .figures .fig{padding:2px 16px;border-left:1px solid ${T.hairline};min-width:0}
@@ -120,6 +223,18 @@ const STYLE = `
 .teamcols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;align-items:start}
 .teamcols>div{display:flex;flex-direction:column;gap:14px;min-width:0}
 .teamfoot{display:flex;justify-content:flex-end}
+/* Check-ins: date and actions on one line, the note full width beneath. */
+.checkin{padding:10px 0;border-bottom:1px solid ${T.hairline}}
+.checkin:last-child{border-bottom:none}
+.checkin-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap}
+/* The fold: padding on the frame, the four-line clamp on the text inside, so
+   no sliver of a fifth line shows through. */
+.gcs .notepreview{display:block;width:100%;text-align:left;padding:8px 11px;border:1px solid ${T.hairline};border-radius:9px;
+  background:${T.surface};cursor:pointer}
+.gcs .notepreview:hover{border-color:var(--accent)}
+.notepreview .clamp{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;
+  white-space:pre-wrap;font-size:13px;line-height:1.5;color:${T.ink}}
+
 .mini.danger{color:#B42318;border-color:${T.dangerTint}}
 @media(max-width:1279px){.teamcols{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:1000px){.workspace{grid-template-columns:minmax(0,1fr)}.teamlist{position:static;max-height:260px}}
@@ -132,7 +247,6 @@ const STYLE = `
 .tlink{font-weight:600;font-size:13px;text-align:left;min-height:28px;text-decoration:underline;
   text-decoration-color:${T.hairline};text-underline-offset:3px}
 .tlink:hover{text-decoration-color:currentColor}
-@media(max-width:1000px){.gcs .grid.resp4{grid-template-columns:repeat(2,minmax(0,1fr)) !important}}
 
 /* primitives */
 .card{background:${T.surface};border:1px solid ${T.hairline};border-radius:18px;padding:20px}
@@ -148,8 +262,6 @@ const STYLE = `
 .btn.ghost:hover{background:${T.paper};filter:none}
 .stat .n{font-family:'Schibsted Grotesk', Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;font-size:38px;font-weight:800;letter-spacing:-.03em;line-height:1}
 .stat .l{font-size:12.5px;color:${T.muted};margin-top:7px}
-/* Four figures share a phone's width two by two; dollar amounts must fit. */
-@media(max-width:600px){.resp4 .stat .n{font-size:26px}.resp4 .stat{padding:16px}}
 table{width:100%;border-collapse:collapse}
 /* Tables whose cells are all full-width inputs: size the columns explicitly. */
 .fixedtable{table-layout:fixed;min-width:760px}
@@ -171,7 +283,14 @@ tr:last-child td{border-bottom:none}
 /* Checklist tick and the stage arrows are hit as often as anything here. */
 .chk button[title="Check off"]{min-width:28px;min-height:28px;display:grid;place-items:center;border-radius:8px}
 .chk button[title="Check off"]:hover{background:${T.paper}}
-.mini.on{border-color:var(--accent);color:var(--accent);background:${T.surface}}
+/* The app-wide "button { border: none }" reset outranked .mini, so small
+   buttons lost the outline that small links and file pickers kept — two looks
+   for one control, and state colours (Held, Request sent) set on an invisible
+   border. One rule gives every small control the same pill. */
+.gcs button.mini{border:1px solid ${T.hairline};transition:border-color .12s,color .12s,background .12s}
+.gcs button.mini:hover:not(:disabled){border-color:${T.muted};color:${T.ink}}
+.gcs button.mini:disabled{opacity:.5;cursor:default}
+.gcs .mini.on{border-color:var(--accent);color:var(--accent);background:${T.surface}}
 .col{background:${T.paper};border:1px solid ${T.hairline};border-radius:14px;padding:12px;min-width:0}
 .board{display:grid;grid-template-columns:repeat(6,minmax(158px,1fr));gap:10px;overflow-x:auto;padding-bottom:6px}
 @media(max-width:860px){.board{grid-template-columns:repeat(6,minmax(150px,1fr))}}
@@ -180,9 +299,8 @@ tr:last-child td{border-bottom:none}
   border-radius:11px;padding:3px}
 .tabs button{padding:6px 13px;border-radius:8px;font-size:13px;font-weight:600;color:${T.muted}}
 .tabs button.on{background:var(--accent);color:#fff}
-.swim{display:flex;align-items:center;gap:14px}
 .track{flex:1;height:9px;border-radius:999px;background:${T.hairline};overflow:hidden}
-.track>div{height:100%;border-radius:999px;background:var(--accent)}
+.track>div{height:100%;border-radius:999px;background:var(--accent);transition:width .35s ease}
 .utilbtn{display:none}
 .savechip{display:inline-flex;align-items:center;gap:6px;font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size:11px;color:${T.muted};white-space:nowrap}
@@ -207,8 +325,6 @@ tr:last-child td{border-bottom:none}
   .sessionrow{flex-wrap:wrap}
 }
 @media(max-width:1000px){
-  .gcs .dashfigures{order:-1}
-  .gcs .wheelcard svg{max-width:230px !important}
   /* Inline grid-template-columns is set per screen, so it has to be overridden
      here to let two- and three-column layouts stack on small viewports. */
   .gcs .grid.resp{grid-template-columns:1fr !important}
@@ -293,7 +409,9 @@ tr:last-child td{border-bottom:none}
 .moneyfield:focus-within{border-color:var(--accent)}
 /* A payment with no amount contributes nothing to the disbursed total, so the
    row says so rather than looking complete. */
-.moneyfield.empty{border-style:dashed;border-color:${T.warn};background:${T.warnTint}}
+/* .empty is also the app's empty-state text style; its padding and centring
+   must not reach the amount box, which they were stretching to twice its height. */
+.moneyfield.empty{border-style:dashed;border-color:${T.warn};background:${T.warnTint};padding:0 7px;text-align:left;font-size:inherit}
 
 /* call grouping — a themed band per call so two calls never read as one list */
 .callband{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:11px 14px;
@@ -310,7 +428,7 @@ tr:last-child td{border-bottom:none}
   border-bottom:1px solid ${T.hairline};flex-wrap:wrap}
 .delrow:last-child{border-bottom:none}
 /* Fixed-width status column so the titles line up down the list. */
-.delrow>.pill{flex:0 0 132px;justify-content:center;margin-top:1px}
+.delrow>.pill{flex:0 0 150px;justify-content:center;margin-top:1px;white-space:nowrap}
 @media(max-width:640px){.delrow>.pill{flex:0 0 auto}}
 .badge{display:inline-grid;place-items:center;min-width:17px;height:17px;padding:0 5px;
   border-radius:999px;font-size:10px;font-weight:700;font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;color:#fff}
@@ -358,7 +476,6 @@ const nextCycleLabel = (label) => {
   const y = Number(m[1]) + 1;
   return `${y}–${String((y + 1) % 100).padStart(2, "0")}`;
 };
-const PHASE_SHORT = (PHASE_BY_MONTH[CURRENT] || "").split(/[ +]/)[0].toUpperCase();
 
 const STAGES = [
   { id:"flagged",   label:"Flagged" },
@@ -809,52 +926,6 @@ const IconBtn = ({ onClick, title, children, color, disabled, style }) => (
 );
 
 /* ---------- annual wheel (signature element) ---------- */
-function Wheel({ accent }) {
-  const cx = 160, cy = 160;
-  const polar = (r, a) => {
-    const rad = ((a - 90) * Math.PI) / 180;
-    return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
-  };
-  const annular = (rI, rO, a0, a1) => {
-    const o0 = polar(rO, a0), o1 = polar(rO, a1), i1 = polar(rI, a1), i0 = polar(rI, a0);
-    const big = a1 - a0 > 180 ? 1 : 0;
-    return `M ${o0.x} ${o0.y} A ${rO} ${rO} 0 ${big} 1 ${o1.x} ${o1.y} L ${i1.x} ${i1.y} A ${rI} ${rI} 0 ${big} 0 ${i0.x} ${i0.y} Z`;
-  };
-  const curIdx = MONTHS.indexOf(CURRENT);
-  const events = [
-    { m: "Sep", label: "Kickoff", color: accent },
-    { m: "Oct", label: "Homecoming", color: T.gold },
-    { m: "Mar", label: "Demo Day", color: accent },
-  ];
-  return (
-    <svg viewBox="0 0 320 320" width="100%" style={{ maxWidth: 320, display: "block", margin: "0 auto" }}>
-      {/* programming season band: Sep..Mar = idx 0..6 */}
-      <path d={annular(96, 120, 0, 7 * 30)} fill={accent} opacity="0.12" />
-      {/* current-month wedge */}
-      <path d={annular(94, 122, curIdx * 30, curIdx * 30 + 30)} fill={accent} opacity="0.9" />
-      {/* month ticks + labels */}
-      {MONTHS.map((m, i) => {
-        const a = i * 30 + 15;
-        const p = polar(140, a);
-        const isCur = i === curIdx;
-        return (
-          <text key={m} x={p.x} y={p.y + 4} textAnchor="middle"
-            fontFamily={MONO} fontSize="11"
-            fontWeight={isCur ? 700 : 400} fill={isCur ? accent : T.muted}>{m}</text>
-        );
-      })}
-      {/* event dots */}
-      {events.map((e) => {
-        const a = MONTHS.indexOf(e.m) * 30 + 15;
-        const p = polar(108, a);
-        return <circle key={e.label} cx={p.x} cy={p.y} r="4.5" fill={e.color} stroke="#fff" strokeWidth="2" />;
-      })}
-      {/* center */}
-      <text x={cx} y={cy - 6} textAnchor="middle" fontFamily={DISP} fontWeight="800" fontSize="34" fill={T.ink}>{CURRENT.toUpperCase()}</text>
-      <text x={cx} y={cy + 16} textAnchor="middle" fontFamily={MONO} fontSize="9.5" letterSpacing="1.2" fill={accent}>{PHASE_SHORT}</text>
-    </svg>
-  );
-}
 
 const FLAT_CHECK = DEMO_CHECKLIST.flatMap((g, gi) =>
   g.items.map((it, ii) => ({ id: `${gi}-${ii}`, group: g.group, label: it[0], owner: it[1] }))
@@ -982,6 +1053,9 @@ export default function App() {
   /* ---- cycles: registry is global; everything operational is keyed by the viewed cycle ---- */
   const [cycles, setCycles, saveCycles] = useCloudSection("cycles", SEED_CYCLES, "global");
   const saveState = useSaveStatus();
+  /* True until every section has had its first answer from storage (and again
+     while a cycle switch reloads them). */
+  const booting = saveState.loading > 0;
   const sideRef = useRef(null);
   const [sideH, setSideH] = useState(0);
   useEffect(() => {
@@ -1809,10 +1883,6 @@ export default function App() {
   const budgetOf = (p) => Number(p.budget) || 0;
   const hasLedger = (p) => ((p && p.payments) || []).length > 0;
   const paidOf = (p) => (hasLedger(p) ? ledgerTotal(p) : Number(p.spent) || 0);
-  const seedTotals = profiles.filter(isFunded).reduce(
-    (a, p) => ({ allocated: a.allocated + budgetOf(p), paid: a.paid + paidOf(p) }),
-    { allocated: 0, paid: 0 }
-  );
   /* Excel export of the viewed cycle, for reporting upward. Built by a pure
      function in lib/exportWorkbook; this only gathers what is on screen. */
   const exportExcel = () => {
@@ -1830,10 +1900,6 @@ export default function App() {
       ui.alert(`Couldn't build the Excel file: ${e.message}`);
     }
   };
-  const p2Totals = phase2.filter(isRunning).reduce(
-    (a, p) => ({ awarded: a.awarded + (Number(p.awarded) || 0), paid: a.paid + p2Paid(p) }),
-    { awarded: 0, paid: 0 }
-  );
   const cohortBudget = visibleProfiles.filter(isFunded).reduce(
     (a, p) => {
       const b = budgetOf(p), sp = paidOf(p);
@@ -2167,10 +2233,6 @@ export default function App() {
     } else setClassMsg("Use a .csv, .xlsx, or .xls file.");
   };
 
-  const nextEv = evList.find((ev) => ev.items.some((i) => !i.done)) || evList[evList.length - 1] || null;
-  const nextEvDone = nextEv ? nextEv.items.filter((i) => i.done).length : 0;
-  const nextEvTotal = nextEv ? nextEv.items.length : 0;
-  const nextEvPct = nextEvTotal ? Math.round((nextEvDone / nextEvTotal) * 100) : 0;
 
   /* Selection is read one call at a time. Teams are grouped by the call they
      applied to, so a themed call (Cybersecurity, say) never shares a table
@@ -2195,16 +2257,12 @@ export default function App() {
     callId: callFilter !== "all" && callFilter !== UNASSIGNED ? callFilter : (accentObj ? accentObj.id : "regular"),
     flaggedBy: [], score: "", stage: "flagged", agreed: "pending", date: "", outcome: null,
   });
+  const comingPct = alumni.length ? Math.round((alumni.filter((a) => a.status === "coming").length / alumni.length) * 100) : 0;
   const counts = {
     submitted: callList.reduce((a, c) => a + (Number(c.subs) || 0), 0), shortlisted: teams.length,
     scheduled: teams.filter((t) => t.stage === "scheduled" || t.stage === "completed" || t.stage === "decided").length,
     selected: teams.filter((t) => t.outcome === "select").length,
   };
-  const comingPct = alumni.length ? Math.round((alumni.filter((a) => a.status === "coming").length / alumni.length) * 100) : 0;
-  const heldN = sessions.filter((s) => s.done).length;
-  const progPct = sessions.length ? Math.round((heldN / sessions.length) * 100) : 0;
-  const selPct = teams.length ? Math.round((counts.scheduled / teams.length) * 100) : 0;
-  const noDate = teams.filter((t) => !t.date && ["flagged", "invited", "responded"].includes(t.stage)).length;
 
   const NAV = [
     { id: "dashboard", label: "Dashboard", Icon: LayoutGrid },
@@ -2219,8 +2277,8 @@ export default function App() {
   ];
 
   const agreedPill = (a) =>
-    a === "yes" ? <Pill bg="#E8F0DD" fg={T.ok}><Check size={12} /> Agreed</Pill> :
-    a === "declined" ? <Pill bg="#FBE3DC" fg={T.danger}><X size={12} /> Declined</Pill> :
+    a === "yes" ? <Pill bg={T.okTint} fg={T.okInk}><Check size={12} /> Agreed</Pill> :
+    a === "declined" ? <Pill bg={T.dangerTint} fg={T.dangerInk}><X size={12} /> Declined</Pill> :
     <Pill bg="#FBF1D8" fg={T.warnInk}><Clock size={12} /> Pending</Pill>;
 
   /* One definition, rendered twice: in the sidebar on desktop and inside the
@@ -2272,9 +2330,8 @@ export default function App() {
         </label>
       </div>
       {supabase && (
-        <button onClick={() => supabase.auth.signOut()}
-          style={{ marginTop: 10, fontSize: 12, color: T.muted, background: "none", border: `1px solid ${T.hairline}`, borderRadius: 999, padding: "6px 12px", cursor: "pointer" }}>
-          Sign out
+        <button className="mini" onClick={() => supabase.auth.signOut()} style={{ marginTop: 6 }} title="Sign out of Innovation Fund Manager">
+          <LogOut size={11} style={{ verticalAlign: -1, marginRight: 4 }} />Sign out
         </button>
       )}
     </>
@@ -2370,162 +2427,35 @@ export default function App() {
           </div>
         )}
 
-        <div className="content">
+        <div className={"content" + (booting ? " booting" : "")} aria-busy={booting}>
+          {booting && (
+            <div className="boot" role="status" aria-label="Loading your data">
+              <div className="bone" style={{ height: 30, width: "min(280px, 60%)" }} />
+              <div className="bone" style={{ height: 14, width: "min(460px, 85%)", marginTop: -6 }} />
+              <div className="bone" style={{ height: 86, marginTop: 8 }} />
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 16 }}>
+                <div className="bone" style={{ height: 260 }} />
+                <div className="bone" style={{ height: 260 }} />
+              </div>
+            </div>
+          )}
           {view === "dashboard" && (
-            <>
-              <PageHead title="The year at a glance"
-                sub={`One cohort cycle, two parallel calls. Right now: ${(PHASE_BY_MONTH[CURRENT] || "").toLowerCase()}.`}
-                actions={
-                  <button className="btn ghost" onClick={exportExcel}
-                    title="Selection, both phases, deliverables, check-ins, attendance, Demo Day and promotion — one sheet each">
-                    <FileSpreadsheet size={14} /> Export to Excel
-                  </button>
-                } />
-
-              <div className="grid resp" style={{ gridTemplateColumns: "1.1fr 1.4fr", marginTop: 22, alignItems: "stretch" }}>
-                <div className="card wheelcard" style={{ display: "flex", flexDirection: "column", justifyContent: "center" }}>
-                  <Wheel accent={accent} />
-                  <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 6, flexWrap: "wrap" }}>
-                    <Legend color={accent} label="Kickoff · Demo Day" />
-                    <Legend color={T.gold} label="Homecoming" />
-                  </div>
-                </div>
-
-                <div className="dashfigures" style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
-                  <div className="grid" style={{ gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)" }}>
-                    <Stat n={counts.submitted} l="Proposals submitted" accent={accent} />
-                    <Stat n={counts.shortlisted} l="Shortlisted to interview" accent={accent} />
-                    <Stat n={counts.scheduled} l="Interviews scheduled" accent={accent} />
-                    <Stat n={counts.selected} l="Selected so far" accent={accent} />
-                  </div>
-                  {/* Every call, side by side — submissions and how far its
-                      teams have got — rather than one blended total. */}
-                  <div className="card">
-                    <div className="eyebrow" style={{ marginBottom: 10 }}>By call</div>
-                    {allGroups.map(({ call, teams: ts }) => (
-                      <button key={call.id} onClick={() => { setView("selection"); setCallFilter(call.id); }}
-                        title={`Open the ${call.name} call in Selection`} className="callrow withdot"
-                        style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", padding: "9px 0", borderBottom: `1px solid ${T.hairline}` }}>
-                        <span style={{ width: 9, height: 9, borderRadius: 999, background: call.accent, flex: "0 0 9px" }} />
-                        <span style={{ flex: 1, minWidth: 0 }}>
-                          <span style={{ fontSize: 13.5, fontWeight: 600 }}>{call.name}</span>
-                          {call.topic && call.id !== UNASSIGNED && <span style={{ color: T.muted, fontSize: 12 }}> · {call.topic}</span>}
-                        </span>
-                        <span className="mono nums" style={{ fontSize: 11.5, color: T.muted }}>
-                          {call.subs != null ? `${call.subs} subs · ` : ""}{ts.length} shortlisted · {ts.filter((t) => t.outcome === "select").length} selected
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                  {/* Both phases now carry money; the landing page showed none of it. */}
-                  <div className="card">
-                    <div className="eyebrow" style={{ marginBottom: 10 }}>Funds</div>
-                    {seedTotals.allocated === 0 && p2Totals.awarded === 0 ? (
-                      <div style={{ color: T.muted, fontSize: 13 }}>No budgets or awards recorded yet.</div>
-                    ) : (
-                      <>
-                        {[
-                          { key: "p1", label: "Phase I seed budgets", scope: `cycle ${viewedCycle.label}`,
-                            used: seedTotals.paid, total: seedTotals.allocated, verb: "paid out", go: "teams" },
-                          { key: "p2", label: "Phase II awards", scope: "running teams",
-                            used: p2Totals.paid, total: p2Totals.awarded, verb: "paid out", go: "phase2" },
-                        ].filter((r) => r.total > 0 || r.used > 0).map((r, i, arr) => {
-                          const over = r.used > r.total;
-                          const pct = r.total ? Math.min(Math.round((r.used / r.total) * 100), 100) : 0;
-                          return (
-                            <button key={r.key} onClick={() => setView(r.go)} title={`Open ${r.go === "teams" ? "Phase I" : "Phase II"} teams`}
-                              style={{ display: "block", width: "100%", textAlign: "left", padding: "4px 0", marginTop: i ? 12 : 0 }}>
-                              <div className="callrow" style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 7 }}>
-                                <span style={{ fontWeight: 600, fontSize: 13 }}>{r.label} <span style={{ color: T.muted, fontWeight: 400, fontSize: 12 }}>· {r.scope}</span></span>
-                                <span className="mono nums" style={{ fontSize: 11.5, color: over ? T.danger : T.muted }}>
-                                  ${r.used.toLocaleString()} {r.verb} of ${r.total.toLocaleString()}
-                                </span>
-                              </div>
-                              <div className="track"><div style={{ width: pct + "%", background: over ? T.danger : accent }} /></div>
-                              {over && <div style={{ fontSize: 11.5, color: T.danger, marginTop: 4 }}>${(r.used - r.total).toLocaleString()} more {r.verb} than allocated</div>}
-                            </button>
-                          );
-                        })}
-                      </>
-                    )}
-                  </div>
-                  <div className="card">
-                    <div className="eyebrow" style={{ marginBottom: 12 }}>Cycle {viewedCycle.label} · two seasons</div>
-                    <Swimlane label="Selection · Jun–Jul" sub={`${counts.scheduled}/${teams.length} at interview or beyond`} pct={selPct} accent={accent} />
-                    <div style={{ height: 14 }} />
-                    <Swimlane label="Programming · Sep → Mar" sub={`${heldN}/${sessions.length} sessions held`} pct={progPct} accent={accent} />
-                  </div>
-                </div>
-              </div>
-
-              <div className="card" style={{ marginTop: 16 }}>
-                <div className="eyebrow" style={{ marginBottom: 12 }}>Needs attention</div>
-                <Alert icon={<Clock size={15} />} text={noDate ? `${noDate} shortlisted team${noDate === 1 ? " has" : "s have"} no interview date yet` : "All shortlisted teams have an interview date"} cta="Open selection" onClick={() => setView("selection")} accent={accent} />
-                {/* Both phases, one line: what teams owe us and who has gone quiet. */}
-                {(() => {
-                  const owing = deliverables.teamsOwing + p2Owed.teamsOwing;
-                  const out = deliverables.outstanding + p2Owed.outstanding;
-                  const late = deliverables.overdue + p2Owed.overdue;
-                  const split = deliverables.outstanding && p2Owed.outstanding
-                    ? ` (Phase I ${deliverables.outstanding}, Phase II ${p2Owed.outstanding})` : "";
-                  const goP2 = p2Owed.overdue > deliverables.overdue || (!deliverables.outstanding && p2Owed.outstanding);
-                  return (
-                    <Alert icon={<PackageCheck size={15} />} tone={late ? T.danger : undefined}
-                      text={out
-                        ? `${owing} team${owing === 1 ? "" : "s"} owe${owing === 1 ? "s" : ""} us ${out} deliverable${out === 1 ? "" : "s"}${split}` + (late ? ` — ${late} overdue or due today` : "")
-                        : "Every deliverable on file is submitted, in both phases"}
-                      cta="See what's owed"
-                      onClick={() => { if (goP2) { setView("phase2"); setP2Tab("deliverables"); } else { setView("teams"); setTeamsTab("deliverables"); } }}
-                      accent={accent} />
-                  );
-                })()}
-                {(() => {
-                  const quiet1 = profiles.filter((p) => lastCheckin(p).stale);
-                  const quiet2 = p2Teams.filter((p) => lastCheckin(p).stale);
-                  const n = quiet1.length + quiet2.length;
-                  const names = [...quiet1, ...quiet2].map((p) => p.name || "Untitled").slice(0, 3).join(", ");
-                  return (
-                    <Alert icon={<CalendarDays size={15} />}
-                      text={n
-                        ? `${n} running team${n === 1 ? " hasn't" : "s haven't"} had a check-in in ${Math.round(CHECKIN_DAYS / 7)}+ weeks — ${names}${n > 3 ? "…" : ""}`
-                        : "Every running team has had a check-in in the last five weeks"}
-                      cta={n ? "Open team" : "Open Phase I"}
-                      onClick={() => {
-                        if (quiet1.length || !quiet2.length) { setView("teams"); setTeamsTab("profiles"); if (quiet1[0]) { setProfileCallFilter("all"); setActiveProfileId(quiet1[0].id); } }
-                        else { setView("phase2"); setP2Tab("profiles"); setP2CohortFilter("all"); setActiveP2Id(quiet2[0].id); }
-                      }}
-                      accent={accent} />
-                  );
-                })()}
-                {(() => {
-                  const f1 = trackerSummary(profiles, trackerItems || []);
-                  const f2 = trackerSummary(p2Teams, p2TrackerItems || []);
-                  const n = f1.followup + f2.followup;
-                  const t = f1.teamsFollowup + f2.teamsFollowup;
-                  const goP2 = f2.followup > f1.followup;
-                  return (
-                    <Alert icon={<ListChecks size={15} />}
-                      text={n
-                        ? `${n} tracker item${n === 1 ? "" : "s"} need${n === 1 ? "s" : ""} a follow-up, across ${t} team${t === 1 ? "" : "s"}${f1.followup && f2.followup ? ` (Phase I ${f1.followup}, Phase II ${f2.followup})` : ""}`
-                        : "Nothing in the team trackers needs a follow-up"}
-                      cta="Open tracker"
-                      onClick={() => { if (goP2) { setView("phase2"); setP2Tab("tracker"); } else { setView("teams"); setTeamsTab("tracker"); } }}
-                      accent={accent} />
-                  );
-                })()}
-                <Alert icon={<Users size={15} />}
-                  tone={gapCount ? T.danger : undefined}
-                  text={gapCount
-                    ? `${gapCount} Phase I team${gapCount === 1 ? " is" : "s are"} missing from the attendance list`
-                    : "Every Phase I team is on the attendance list"}
-                  cta={gapCount ? "Fix the list" : "Open attendance"}
-                  onClick={() => { setView("programming"); setProgTab("attendance"); }}
-                  accent={accent} />
-                <Alert icon={<CalendarCheck size={15} />} text={nextEv ? `${nextEv.name} prep is ${nextEvPct}% complete — ${nextEvTotal - nextEvDone} step${nextEvTotal - nextEvDone === 1 ? "" : "s"} left` : "No events planned yet"} cta="Open planning" onClick={() => setView("planning")} accent={accent} />
-                <Alert icon={<Megaphone size={15} />} text={`Promo: ${classes.filter((c) => c.done).length}/${classes.length} class visits and ${pizza.filter((p) => p.done).length}/${pizza.length} pizza Q&As done`} cta="Manage promo" onClick={() => setView("calls")} accent={accent} />
-                <Alert icon={<Trophy size={15} />} text={`Homecoming: ${comingPct}% of alumni confirmed`} cta="View cohorts" onClick={() => setView("cohorts")} accent={accent} last />
-              </div>
-            </>
+            <Dashboard
+              cycle={viewedCycle} isPast={isPastView} month={CURRENT} season={PHASE_BY_MONTH[CURRENT] || "Programme"} accent={accent}
+              calls={callList} selection={teams} counts={counts}
+              p1={profileRows} p2={p2Teams} p1Items={trackerItems || []} p2Items={p2TrackerItems || []}
+              sessions={sessions} attendance={attendance} roster={roster} events={events} eventPrep={evList}
+              classes={classes} pizza={pizza} alumni={alumni}
+              gaps={gaps} missingP2={missingP2} onExport={exportExcel}
+              go={{
+                selection: (callId) => { setCallFilter(callId || "all"); setView("selection"); },
+                p1: (tab, teamId) => { setView("teams"); setTeamsTab(tab || "profiles"); if (teamId) { setProfileCallFilter("all"); setActiveProfileId(teamId); } },
+                p2: (tab, teamId) => { setView("phase2"); setP2Tab(tab || "profiles"); if (teamId) { setP2CohortFilter("all"); setActiveP2Id(teamId); } },
+                events: (tab, sid) => { setView("programming"); setProgTab(tab || "sessions"); if (sid) setAttSessionId(sid); },
+                planning: (evId) => { if (evId) setActiveEvId(evId); setView("planning"); },
+                calls: () => setView("calls"),
+                cohorts: () => setView("cohorts"),
+              }} />
           )}
 
           {view === "calls" && (
@@ -2950,7 +2880,7 @@ export default function App() {
                   ) : (
                     <div className="workspace">
                       <TeamList activeId={activeProfile && activeProfile.id} onPick={setActiveProfileId}
-                        moneyOf={(p) => ({ granted: budgetOf(p), used: paidOf(p) })}
+                        items={p1Items} moneyOf={(p) => ({ granted: budgetOf(p), used: paidOf(p) })}
                         groups={shownProfileGroups.map(({ call, teams: ps }) => ({
                           id: call.id, accent: call.accent, teams: ps,
                           label: call.id === UNASSIGNED ? "Unassigned" : `${call.name} call`,
@@ -3348,10 +3278,21 @@ export default function App() {
                           <IconBtn title="Move up" disabled={i === 0} onClick={() => moveSession(i, -1)}><ChevronUp size={15} /></IconBtn>
                           <IconBtn title="Move down" disabled={i === sessions.length - 1} onClick={() => moveSession(i, 1)}><ChevronDown size={15} /></IconBtn>
                         </div>
-                        <button onClick={() => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, done: !x.done } : x)))}
-                          className="mini" style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap", borderColor: s.done ? T.ok : T.hairline, color: s.done ? T.ok : T.muted }} title="Mark held">
-                          {s.done ? <CheckCircle2 size={14} /> : <Circle size={14} />}{s.done ? "Held" : "Upcoming"}
-                        </button>
+                        {(() => {
+                          /* A date that has gone by without the session being
+                             marked used to keep reading "Upcoming" for ever. */
+                          const left = daysUntil(parseProgramDate(s.date, viewedCycle.id));
+                          const missed = !s.done && left !== null && left < 0;
+                          const tone = s.done ? T.ok : missed ? T.warnInk : left === 0 ? accent : T.muted;
+                          return (
+                            <button onClick={() => setSessions((ss) => ss.map((x, j) => (j === i ? { ...x, done: !x.done } : x)))}
+                              className="mini" title={s.done ? "Held — click to undo" : missed ? "This date has passed. Click if the session was held, or change its date." : "Click once the session has been held"}
+                              style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap", minWidth: 96,
+                                       borderColor: s.done ? T.ok : missed ? T.warn : T.hairline, color: tone, background: missed ? T.warnTint : T.surface }}>
+                              {s.done ? <CheckCircle2 size={14} /> : <Circle size={14} />}{s.done ? "Held" : missed ? "Was it held?" : left === 0 ? "Today" : "Upcoming"}
+                            </button>
+                          );
+                        })()}
                         <IconBtn onClick={() => printSignIn(s)} title="Print attendance sheet for this session" style={{ marginTop: 8 }}><Download size={14} /></IconBtn>
                         <IconBtn title="Remove session" style={{ marginTop: 8 }} onClick={() => rmSession(i)}><Trash2 size={14} /></IconBtn>
                       </div>
@@ -3425,7 +3366,7 @@ export default function App() {
                   const cur = sessions.find((s) => s.sid === attSessionId) || sessions[0];
                   if (!cur) return <div className="card" style={{ marginTop: 20, color: T.muted, fontSize: 13.5 }}>Add a session first.</div>;
                   const st = attStats(cur.sid);
-                  const pill = { present: { bg: "#E8F0DD", fg: T.ok, lbl: "Present" }, absent: { bg: "#FBE3DC", fg: T.danger, lbl: "Absent" }, excused: { bg: "#FBF1D8", fg: T.warnInk, lbl: "Excused" } };
+                  const pill = { present: { bg: T.okTint, fg: T.okInk, lbl: "Present" }, absent: { bg: T.dangerTint, fg: T.dangerInk, lbl: "Absent" }, excused: { bg: "#FBF1D8", fg: T.warnInk, lbl: "Excused" } };
                   return (
                     <>
                       <div className="chiprow" style={{ marginTop: 18 }}>
@@ -3490,8 +3431,8 @@ export default function App() {
                                 return (
                                   <div key={r.rowId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: `1px solid ${T.hairline}` }}>
                                     <button onClick={() => cycleAtt(cur.sid, r.key)} title="Click to cycle present → absent → excused"
-                                      style={{ flex: "0 0 92px", textAlign: "left" }}>
-                                      {p ? <Pill bg={p.bg} fg={p.fg}>{p.lbl}</Pill> : <Pill bg="#EFEAE5" fg={T.muted}>Unmarked</Pill>}
+                                      style={{ flex: "0 0 92px", textAlign: "left", minHeight: 28 }}>
+                                      {p ? <Pill bg={p.bg} fg={p.fg}>{p.lbl}</Pill> : <Pill bg={T.chip} fg={T.mutedInk}>Unmarked</Pill>}
                                     </button>
                                     <div style={{ flex: 1, minWidth: 0 }}>
                                       <div style={{ fontSize: 13, fontWeight: 500 }}>{r.name}</div>
@@ -3779,7 +3720,7 @@ export default function App() {
 
                     <div className="workspace">
                       <TeamList activeId={activeP2 && activeP2.id} onPick={setActiveP2Id}
-                        moneyOf={(p) => ({ granted: Number(p.awarded) || 0, used: p2Paid(p) })}
+                        items={p2Items} moneyOf={(p) => ({ granted: Number(p.awarded) || 0, used: p2Paid(p) })}
                         groups={(p2Filter === "all" ? p2Cohorts : [p2Filter]).map((c) => ({
                           id: c, label: c, accent: T.burgundy, teams: p2Teams.filter((p) => p2CohortOf(p) === c),
                         }))} />
@@ -3878,32 +3819,6 @@ function PageHead({ title, sub, actions }) {
     </div>
   );
 }
-function Stat({ n, l, accent }) {
-  return (
-    <div className="card stat">
-      <div className="n" style={{ color: accent }}>{n}</div>
-      <div className="l">{l}</div>
-    </div>
-  );
-}
-function Legend({ color, label }) {
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, color: T.muted }}>
-      <span style={{ width: 9, height: 9, borderRadius: 999, background: color }} /> {label}
-    </span>
-  );
-}
-function Swimlane({ label, sub, pct, accent }) {
-  return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 7 }}>
-        <span style={{ fontWeight: 600, fontSize: 13 }}>{label}</span>
-        <span className="mono" style={{ fontSize: 11.5, color: T.muted }}>{sub}</span>
-      </div>
-      <div className="track"><div style={{ width: pct + "%", background: accent }} /></div>
-    </div>
-  );
-}
 /* Paste or type a team's members straight into the attendance list. They are
    saved to the team's Members field, the one place people are kept. */
 function MemberEditor({ team, onSave, onCancel }) {
@@ -3919,15 +3834,6 @@ function MemberEditor({ team, onSave, onCancel }) {
         </button>
         <button className="mini" onClick={onCancel}>Cancel</button>
       </div>
-    </div>
-  );
-}
-function Alert({ icon, text, cta, onClick, accent, last, tone }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 0", borderBottom: last ? "none" : `1px solid ${T.hairline}` }}>
-      <span style={{ color: tone || accent, display: "grid", placeItems: "center", width: 30, height: 30, borderRadius: 9, background: tone ? T.dangerTint : T.paper, flex: "0 0 30px" }}>{icon}</span>
-      <span style={{ flex: 1, fontSize: 13.5 }}>{text}</span>
-      <button className="btn ghost sm" onClick={onClick}>{cta}</button>
     </div>
   );
 }
@@ -4146,7 +4052,7 @@ const kMoney = (n) => (n >= 1000 ? `$${(Math.round(n / 100) / 10).toLocaleString
     the question is as often "which team is this person on?" as it is "where
     is this team?" — and nobody should have to open teams one by one to find
     out. Matching is on the team's name and on anyone in its member list. */
-function TeamList({ groups, activeId, onPick, moneyOf }) {
+function TeamList({ groups, activeId, onPick, moneyOf, items }) {
   const [q, setQ] = useState("");
   const needle = q.trim().toLowerCase();
   const match = (p) => {
@@ -4185,9 +4091,12 @@ function TeamList({ groups, activeId, onPick, moneyOf }) {
             {[...rows].sort((a, b) => (a.p.name || "").localeCompare(b.p.name || "")).map(({ p, hit }) => {
               const st = statusOf(p);
               const running = isRunning(p);
-              const worst = running ? profileDeliverableState(p) : null;
               const cin = lastCheckin(p);
               const m = moneyOf(p);
+              /* The dot means what it means on the dashboard: red for overdue
+                 or overpaid, amber for anything else to chase, green for clear. */
+              const health = teamHealth(p, { award: m.granted, items: items || [] });
+              const dot = { danger: T.danger, warn: T.warn, ok: T.ok }[health.level];
               const on = activeId === p.id;
               return (
                 <button key={p.id} className={"teamrow" + (on ? " on" : "")} aria-current={on ? "true" : undefined}
@@ -4196,8 +4105,8 @@ function TeamList({ groups, activeId, onPick, moneyOf }) {
                     // Stacked on a phone, the team opens below the list: take the reader to it.
                     if (window.innerWidth <= 1000) setTimeout(() => { const el = document.querySelector(".teamdetail"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }, 50);
                   }}
-                  title={[st.id !== "active" ? st.label : null, worst ? worst.label : null, running && cin.stale ? `last check-in: ${cin.label.toLowerCase()}` : null].filter(Boolean).join(" · ") || undefined}>
-                  <span className="tdot" style={{ background: !running ? "transparent" : worst ? worst.fg : T.ok, borderColor: !running ? T.muted : "transparent" }} />
+                  title={!running ? st.label : health.flags.length ? health.flags.join(" · ") : "On track"}>
+                  <span className="tdot" style={{ background: running ? dot : "transparent", borderColor: running ? "transparent" : T.muted }} />
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <span className="tname" style={st.id === "withdrawn" ? { textDecoration: "line-through", color: T.muted } : undefined}>{p.name || "Untitled"}</span>
                     <span className="tmeta">
@@ -4251,7 +4160,7 @@ function TeamHeader({ rec, name, onName, onChange, groupControl, origin, followu
         {running
           ? (out.length
             ? <Pill bg={worst.bg} fg={worst.fg}>{out.length} deliverable{out.length === 1 ? "" : "s"} · {worst.label.toLowerCase()}</Pill>
-            : <Pill bg={T.okTint} fg={T.ok}><Check size={12} /> Nothing owed</Pill>)
+            : <Pill bg={T.okTint} fg={T.okInk}><Check size={12} /> Nothing owed</Pill>)
           : <Pill bg={st.bg} fg={st.fg}>{st.label}</Pill>}
         {running && <Pill bg={cin.stale ? T.warnTint : T.surface} fg={cin.stale ? T.warnInk : T.muted}>Last check-in · {cin.label.toLowerCase()}</Pill>}
         <Pill bg={ds.missing.length ? T.warnTint : T.surface} fg={ds.missing.length ? T.warnInk : T.muted}>Documents · {ds.onFile}/{ds.total}</Pill>
@@ -4355,38 +4264,74 @@ function DeliverablesCard({ items, onAdd, onUpd, onRm }) {
   );
 }
 
-/** Check-in meetings, with how long it has been since the last one. */
+
+
+/** Check-in meetings, newest first, with how long it has been since the last
+    one. A written note folds to a short preview so a long meeting can't
+    swallow the page; "Show all" opens it to read or edit, "Fold" closes it. */
 function CheckinsCard({ rec, onAdd, onUpd, onRm }) {
-  const list = rec.meetings || [];
+  const list = [...(rec.meetings || [])].sort((x, y) => String(y.date || "9999").localeCompare(String(x.date || "9999")));
   const cin = lastCheckin(rec);
+  const [openIds, setOpenIds] = useState(() => new Set());
+  // Another team, a fresh start: its long notes open folded.
+  useEffect(() => { setOpenIds(new Set()); }, [rec.id]);
+  const toggle = (id, on) => setOpenIds((cur) => { const n = new Set(cur); (on ?? !n.has(id)) ? n.add(id) : n.delete(id); return n; });
+  const folded = list.filter((m) => isLongNote(m.note) && !openIds.has(m.id)).length;
   return (
-    <div className="card">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, gap: 10, flexWrap: "wrap" }}>
-        <div className="eyebrow">Check-ins · {list.length}</div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {isRunning(rec) && (
-            <span className="mono" style={{ fontSize: 10.5, color: cin.stale ? T.warnInk : T.muted }}
-              title={cin.stale ? `More than ${CHECKIN_DAYS} days without a check-in` : undefined}>
-              last: {cin.label.toLowerCase()}
-            </span>
-          )}
-          <button className="mini" onClick={() => onAdd({ date: todayISO(), note: "" })}><Plus size={11} style={{ verticalAlign: -1 }} /> Check-in</button>
-        </div>
+    <Section title={`Check-ins · ${list.length}`} right={
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        {isRunning(rec) && (
+          <span className="mono" style={{ fontSize: 10.5, color: cin.stale ? T.warnInk : T.muted }}
+            title={cin.stale ? `More than ${CHECKIN_DAYS} days without a check-in` : undefined}>
+            last: {cin.label.toLowerCase()}
+          </span>
+        )}
+        {list.some((m) => isLongNote(m.note)) && (
+          <button className="mini" onClick={() => setOpenIds(folded ? new Set(list.map((m) => m.id)) : new Set())}>
+            {folded ? "Show all notes" : "Fold all notes"}
+          </button>
+        )}
+        <button className="mini" onClick={() => onAdd({ date: todayISO(), note: "" })}><Plus size={11} style={{ verticalAlign: -1 }} /> Check-in</button>
       </div>
-      {list.length === 0 && <div style={{ color: T.muted, fontSize: 12.5 }}>No check-ins logged yet.</div>}
-      {list.map((m) => (
-        <div key={m.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "9px 0", borderBottom: `1px solid ${T.hairline}` }}>
-          <div style={{ flex: "0 0 auto", paddingTop: 1 }}>
-            <DateField value={m.date} onChange={(v) => onUpd(m.id, { date: v })} w="126px" title="Check-in date" />
+    }>
+      {list.length === 0 && <div style={{ color: T.muted, fontSize: 12.5 }}>No check-ins logged yet. Add one after each meeting with the team.</div>}
+      {list.map((m) => {
+        const long = isLongNote(m.note);
+        const open = !long || openIds.has(m.id);
+        const ago = daysUntil(m.date);
+        return (
+          <div key={m.id} className="checkin">
+            <div className="checkin-head">
+              <DateField value={m.date} onChange={(v) => onUpd(m.id, { date: v })} w="132px" title="Check-in date" />
+              {ago !== null && ago <= 0 && <span className="mono" style={{ fontSize: 10.5, color: T.muted }}>{lastCheckin({ meetings: [m] }).label.toLowerCase()}</span>}
+              <span style={{ marginLeft: "auto" }} />
+              {long && (
+                <button className="mini" onClick={() => toggle(m.id)} aria-expanded={open}>
+                  {open ? <><ChevronUp size={11} style={{ verticalAlign: -1 }} /> Fold</> : <><ChevronDown size={11} style={{ verticalAlign: -1 }} /> Show all</>}
+                </button>
+              )}
+              <IconBtn title="Remove check-in" onClick={() => onRm(m.id)}><Trash2 size={13} /></IconBtn>
+            </div>
+            {open ? (
+              /* A note being written never folds under the cursor: focusing it marks it open. */
+              <div onFocus={() => { if (!openIds.has(m.id)) toggle(m.id, true); }}>
+                <NoteField value={m.note} onChange={(v) => onUpd(m.id, { note: v })} label={`Notes for the check-in of ${m.date || "this meeting"}`}
+                  placeholder="Notes, decisions, action items — as long as you need" minRows={2}
+                  style={long ? { maxHeight: 420, overflowY: "auto" } : undefined} />
+              </div>
+            ) : (
+              <button className="notepreview" onClick={() => toggle(m.id, true)} title="Show the whole note to read or edit it">
+                <span className="clamp">{m.note}</span>
+              </button>
+            )}
           </div>
-          <NoteField value={m.note} onChange={(v) => onUpd(m.id, { note: v })}
-            placeholder="Notes, decisions, action items — as long as you need" minRows={2} />
-          <IconBtn title="Remove check-in" style={{ marginTop: 4 }} onClick={() => onRm(m.id)}><Trash2 size={13} /></IconBtn>
-        </div>
-      ))}
-    </div>
+        );
+      })}
+    </Section>
   );
 }
+/** Long enough to fold: more than four lines, or a dense paragraph. */
+const isLongNote = (t) => !!t && (String(t).split("\n").length > 4 || String(t).length > 280);
 
 /** Phase II's tranche ledger: the disbursed figure is its total, never typed. */
 /** The money ledger both phases keep: dated rows with an amount and a note,
@@ -4519,13 +4464,13 @@ function DeliverablesTab({ teams, summary, scopeNote, elsewhere, onSubmit, onOpe
                       <td>{!isRunning(p)
                         ? <Pill bg={st.bg} fg={st.fg}>{st.id === "withdrawn" ? <Ban size={12} /> : <CheckCircle2 size={12} />} {st.label}</Pill>
                         : worst ? <Pill bg={worst.bg} fg={worst.fg}>{worst.label}</Pill>
-                        : <Pill bg={T.okTint} fg={T.ok}><Check size={12} /> All in</Pill>}</td>
+                        : <Pill bg={T.okTint} fg={T.okInk}><Check size={12} /> All in</Pill>}</td>
                       <td style={{ whiteSpace: "nowrap" }}>{isRunning(p)
                         ? <span className="mono" style={{ fontSize: 11.5, color: cin.stale ? T.warnInk : T.muted }}>{cin.label}</span>
                         : <span style={{ color: T.muted }}>—</span>}</td>
                       <td>{ds.missing.length
                         ? <Pill bg={T.warnTint} fg={T.warnInk}><span title={`Missing: ${ds.missing.join(", ")}`}>{ds.onFile}/{ds.total} · no {ds.missing.map((m) => m.toLowerCase()).join(" or ")}</span></Pill>
-                        : <Pill bg={T.okTint} fg={T.ok}><Check size={12} /> Both on file</Pill>}</td>
+                        : <Pill bg={T.okTint} fg={T.okInk}><Check size={12} /> Both on file</Pill>}</td>
                       <td><button className="mini" onClick={() => onOpen(p.id)}>Open</button></td>
                     </tr>
                   );

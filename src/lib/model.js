@@ -70,10 +70,10 @@ export const SOON_DAYS = 7;
    anything saved before this reads as active.
    ============================================================ */
 export const TEAM_STATUS = [
-  { id: "active", label: "Active", fg: T.ok, bg: T.okTint },
+  { id: "active", label: "Active", fg: T.okInk, bg: T.okTint },
   { id: "atrisk", label: "At risk", fg: T.warnInk, bg: T.warnTint },
-  { id: "completed", label: "Completed", fg: T.info, bg: "#DCEBF3" },
-  { id: "withdrawn", label: "Withdrawn", fg: T.muted, bg: "#EFEAE5" },
+  { id: "completed", label: "Completed", fg: T.infoInk, bg: T.infoTint },
+  { id: "withdrawn", label: "Withdrawn", fg: T.mutedInk, bg: T.chip },
 ];
 export const statusOf = (p) =>
   TEAM_STATUS.find((x) => x.id === (p && p.status)) || TEAM_STATUS[0];
@@ -108,20 +108,20 @@ export function lastCheckin(rec) {
 }
 
 export function deliverableState(d) {
-  if (!d) return { key: "pending", label: "Pending", fg: T.muted, bg: "#EFEAE5", rank: 4 };
-  if (d.status === "submitted") return { key: "submitted", label: "Submitted", fg: T.ok, bg: T.okTint, rank: 5 };
+  if (!d) return { key: "pending", label: "Pending", fg: T.mutedInk, bg: T.chip, rank: 4 };
+  if (d.status === "submitted") return { key: "submitted", label: "Submitted", fg: T.okInk, bg: T.okTint, rank: 5 };
 
   const days = daysUntil(d.due);
   if (days === null) {
-    return { key: "pending", label: d.due ? "No firm date" : "No due date", fg: T.muted, bg: "#EFEAE5", rank: 4 };
+    return { key: "pending", label: d.due ? "No firm date" : "No due date", fg: T.mutedInk, bg: T.chip, rank: 4 };
   }
   if (days < 0) {
     const n = Math.abs(days);
-    return { key: "overdue", label: `Overdue by ${n} day${n === 1 ? "" : "s"}`, fg: T.danger, bg: T.dangerTint, rank: 0, days };
+    return { key: "overdue", label: `Overdue by ${n} day${n === 1 ? "" : "s"}`, fg: T.dangerInk, bg: T.dangerTint, rank: 0, days };
   }
-  if (days === 0) return { key: "today", label: "Due today", fg: T.danger, bg: T.dangerTint, rank: 1, days };
+  if (days === 0) return { key: "today", label: "Due today", fg: T.dangerInk, bg: T.dangerTint, rank: 1, days };
   if (days <= SOON_DAYS) return { key: "soon", label: `Due in ${days} day${days === 1 ? "" : "s"}`, fg: T.warnInk, bg: T.warnTint, rank: 2, days };
-  return { key: "scheduled", label: `Due ${fmtDate(d.due)}`, fg: T.info, bg: "#DCEBF3", rank: 3, days };
+  return { key: "scheduled", label: `Due ${fmtDate(d.due)}`, fg: T.infoInk, bg: T.infoTint, rank: 3, days };
 }
 
 export const isOutstanding = (d) => !!d && d.status !== "submitted";
@@ -215,10 +215,10 @@ export function rosterGaps(profiles, missingProfiles) {
    they travel with it.
    ============================================================ */
 export const TRACK_STATUS = [
-  { id: "notdone", label: "Not done", fg: T.muted, bg: "#EFEAE5" },
-  { id: "scheduled", label: "Scheduled", fg: T.info, bg: "#DCEBF3" },
+  { id: "notdone", label: "Not done", fg: T.mutedInk, bg: T.chip },
+  { id: "scheduled", label: "Scheduled", fg: T.infoInk, bg: T.infoTint },
   { id: "followup", label: "Needs follow-up", fg: T.warnInk, bg: T.warnTint },
-  { id: "done", label: "Done", fg: T.ok, bg: T.okTint },
+  { id: "done", label: "Done", fg: T.okInk, bg: T.okTint },
 ];
 export const trackStatus = (rec, itemId) =>
   TRACK_STATUS.find((x) => x.id === ((rec && rec.tracker) || {})[itemId]) || TRACK_STATUS[0];
@@ -264,6 +264,110 @@ export function ledgerNote(rec) {
   if (!n) return "no payments recorded yet — add one under Payments";
   if (blank) return `${blank} of ${n} payment${n === 1 ? "" : "s"} has no amount — type it in the $ box`;
   return `total of ${n} payment${n === 1 ? "" : "s"} under Payments`;
+}
+
+/* ============================================================
+   The dashboard's readings
+
+   The landing page answers three questions — what needs doing, what is
+   coming, how is each team — from what the other screens already hold.
+   Everything here is a pure reading of that data, so the dashboard can never
+   disagree with the page it links to.
+   ============================================================ */
+
+/** Paid to a team so far: its payments, or the single figure typed before
+    payments were itemised. */
+export const paidOut = (rec) =>
+  ((rec && rec.payments) || []).length ? ledgerTotal(rec) : Number(rec && rec.spent) || 0;
+
+/** The programme year runs September to August. */
+export const PROGRAM_MONTHS = ["Sep", "Oct", "Nov", "Dec", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug"];
+const CAL = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const pad = (n) => String(n).padStart(2, "0");
+
+/**
+ * Session and milestone dates are typed the way people say them — "Nov 21",
+ * "21 Nov", "Mar 27, 14:00" — with no year, because the cycle supplies it:
+ * September to December fall in the cycle's first year, January to August in
+ * its second. Returns an ISO date, or null for anything that isn't a day
+ * ("TBD", "end Mar").
+ */
+export function parseProgramDate(text, cycleId, now = new Date()) {
+  const t = String(text || "").trim();
+  if (!t) return null;
+  if (ISO_RE.test(t)) return daysUntil(t) === null ? null : t;
+  const m = t.match(/\b([a-z]{3})[a-z]*\.?\s+(\d{1,2})\b/i) || t.match(/\b(\d{1,2})\s+([a-z]{3})[a-z]*\b/i);
+  if (!m) return null;
+  const [word, num] = /^\d/.test(m[1]) ? [m[2], m[1]] : [m[1], m[2]];
+  const month = CAL.indexOf(word.toLowerCase());
+  const day = Number(num);
+  if (month < 0 || day < 1) return null;
+  const typedYear = t.match(/\b(20\d{2})\b/);
+  const cycleYear = String(cycleId || "").match(/(20\d{2})/);
+  const start = cycleYear ? Number(cycleYear[1]) : (now.getMonth() >= 8 ? now.getFullYear() : now.getFullYear() - 1);
+  const year = typedYear ? Number(typedYear[1]) : (month >= 8 ? start : start + 1);
+  if (day > new Date(year, month + 1, 0).getDate()) return null;
+  return `${year}-${pad(month + 1)}-${pad(day)}`;
+}
+
+/**
+ * How one team is doing, read from its own record: what it owes, when it was
+ * last seen, the documents on file, tracker follow-ups and its money. `level`
+ * is the worst of them, so a list can be sorted with the teams to chase first.
+ */
+export function teamHealth(rec, { award = 0, items = [] } = {}) {
+  const st = statusOf(rec);
+  const paid = paidOut(rec);
+  if (!isRunning(rec)) {
+    return { level: "idle", score: -1, status: st, flags: [st.label], out: 0, overdue: 0, worst: null,
+      checkin: lastCheckin(rec), docs: docsSummary(rec), followups: 0, trackDone: 0, trackTotal: 0, paid, award };
+  }
+  const outs = (rec.deliverables || []).filter(isOutstanding).map(deliverableState);
+  const overdue = outs.filter((x) => x.key === "overdue" || x.key === "today").length;
+  const soon = outs.filter((x) => x.key === "soon").length;
+  const worst = outs.length ? outs.reduce((w, x) => (x.rank < w.rank ? x : w)) : null;
+  const checkin = lastCheckin(rec);
+  const docs = docsSummary(rec);
+  const followups = items.filter((it) => trackStatus(rec, it.id).id === "followup").length;
+  const trackDone = items.filter((it) => trackStatus(rec, it.id).id === "done").length;
+  const overpaid = award > 0 && paid > award;
+  const noMembers = parseMembers(rec.members).length === 0;
+
+  const flags = [];
+  if (overdue) flags.push(`${overdue} overdue`);
+  if (overpaid) flags.push("paid over budget");
+  if (st.id === "atrisk") flags.push("at risk");
+  if (checkin.stale) flags.push(checkin.days === null ? "no check-in yet" : "check-in due");
+  if (followups) flags.push(`${followups} to follow up`);
+  if (docs.missing.length) flags.push(`${docs.missing.length} document${docs.missing.length === 1 ? "" : "s"} missing`);
+  if (noMembers) flags.push("no members listed");
+  if (!overdue && soon) flags.push(`${soon} due this week`);
+
+  const danger = overdue > 0 || overpaid;
+  const warn = st.id === "atrisk" || checkin.stale || followups > 0 || docs.missing.length > 0 || noMembers || soon > 0;
+  const score = overdue * 4 + (overpaid ? 4 : 0) + (st.id === "atrisk" ? 3 : 0) + (checkin.stale ? 2 : 0)
+    + followups * 1.5 + docs.missing.length + (noMembers ? 1 : 0) + soon * 0.5;
+  return { level: danger ? "danger" : warn ? "warn" : "ok", score, status: st, flags,
+    out: outs.length, overdue, worst, checkin, docs, followups, trackDone, trackTotal: items.length, paid, award };
+}
+
+/**
+ * Attendance across the sessions that were held and marked: the share of
+ * marks that read "present", and the held sessions nobody took attendance at.
+ */
+export function attendanceSummary(sessions, attendance, roster) {
+  const keys = new Set((roster || []).map((r) => r.key));
+  let present = 0, marked = 0, counted = 0;
+  const unmarked = [];
+  (sessions || []).filter((s) => s.done).forEach((s) => {
+    const row = (attendance && s.sid && attendance[s.sid]) || {};
+    const vals = Object.keys(row).filter((k) => keys.has(k)).map((k) => row[k]);
+    if (!vals.length) { unmarked.push(s); return; }
+    counted++;
+    marked += vals.length;
+    present += vals.filter((v) => v === "present").length;
+  });
+  return { rate: marked ? Math.round((present / marked) * 100) : null, sessions: counted, unmarked };
 }
 
 export { ISO_RE };

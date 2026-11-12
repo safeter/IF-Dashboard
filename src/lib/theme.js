@@ -10,6 +10,13 @@ export const T = {
      4.5:1 as small text on warnTint, white and paper (5.2-5.8:1); the lighter
      #9A7B12 it replaces measured 3.6-4.0:1. */
   okTint: "#E8F0DD", warnTint: "#FBF1D8", dangerTint: "#FBE3DC", warnInk: "#7D6208",
+  /* The same idea for the other three states. As small text on their own
+     tints the base colours measured 3.7 (danger), 3.9 (ok) and 4.3 (info)
+     to 1; these read 5.4, 5.5 and 5.7. The base colours stay for dots, bars
+     and borders, where they are meant to be bright. */
+  dangerInk: "#B42318", okInk: "#3F6A0C", infoInk: "#005F8C", infoTint: "#DCEBF3",
+  /* Muted text on the grey chip fill (5.6:1; plain muted is 4.3 there). */
+  mutedInk: "#5F5B57", chip: "#EFEAE5",
 };
 
 /* The eight accents a call can be given. */
