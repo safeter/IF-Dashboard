@@ -18,9 +18,13 @@ const baselines = new Map();
 const conflicts = new Map();
 let dirtyCount = 0;
 let inFlight = 0;
+/* Sections still waiting on their first read. Until it reaches zero the
+   screens hold placeholder (sample) data, which must never be shown as if it
+   were the team's own. */
+let loadingCount = 0;
 
 const rowKey = (r) => `${r.cycle}::${r.section}`;
-const snapshot = () => ({ pending: dirtyCount + inFlight, failed: failedMap.size, conflicted: conflicts.size });
+const snapshot = () => ({ pending: dirtyCount + inFlight, failed: failedMap.size, conflicted: conflicts.size, loading: loadingCount });
 const emit = () => { const s = snapshot(); listeners.forEach((fn) => fn(s)); };
 
 /** Remember the stored timestamp a section was read at. */
@@ -179,6 +183,11 @@ export function useCloudSection(section, seed, scope) {
     scopeRef.current = scope;
     if (!supabase) return;
     let alive = true;
+    /* Counted once in, once out — whether the read lands, fails, or is
+       abandoned because the cycle changed underneath it. */
+    let counted = true;
+    const settle = () => { if (counted) { counted = false; loadingCount--; emit(); } };
+    loadingCount++; emit();
     loadedRef.current = false;
     setData(seedRef.current);
     supabase
@@ -192,8 +201,9 @@ export function useCloudSection(section, seed, scope) {
         noteBaseline(scope, section, row ? row.updated_at : null);
         if (row && row.data != null) setData(row.data);
         loadedRef.current = true;
-      });
-    return () => { alive = false; };
+      })
+      .then(settle, settle);
+    return () => { alive = false; settle(); };
   }, [section, scope]);
 
   // Register this section's flush with the tab-close handler.

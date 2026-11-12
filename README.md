@@ -74,11 +74,20 @@ Every shortlisted team belongs to **one specific call**, and the Selection scree
 
 - **Interview list** groups teams under a coloured band per call, each with its own table and its own counts. Cybersecurity applicants never sit in the same table as Regular ones.
 - **Board** tints every card with its call's colour and tags it, so a mixed board still reads at a glance.
-- The chips above both views filter to one call, and the dashboard's **By call** panel breaks submissions and outcomes down the same way.
+- The chips above both views filter to one call, and the dashboard's **Selection** card breaks proposals and outcomes down the same way.
 
 Importing an Airtable export maps the call column automatically — a value containing "Cybersecurity" or "Special" lands the team in that call. Re-importing keeps each team's id where the name is unchanged, so Team profiles and Demo Day results stay linked.
 
 Deleting a call never deletes teams: they move to an **Unassigned** group until you put them in another call.
+
+## The dashboard
+
+The landing page is read live from the other screens; nothing on it is typed there.
+
+- **Needs attention** — one list, worst first, of things to act on: overdue deliverables, teams due a check-in (none in five weeks), tracker follow-ups, missing documents, teams missing from the attendance list, a session that has passed without being marked held, an unconfirmed room for the next session. Each line opens the place to fix it. Lines that don't apply to the season (interview dates in November, Homecoming replies in March) are left out, and housekeeping folds away when there is real chasing to do.
+- **Coming up** — the next dated things, whatever screen holds them: sessions, critical dates, deliverable due dates. Session and milestone dates are typed without a year (“Nov 21”); September–December fall in the cycle's first year, January–August in its second.
+- **Teams at a glance** — every running team in both phases on one line (deliverables, last check-in, documents, tracker, paid out), the ones to chase first. The coloured dot means the same here and in each phase's team list: red for something overdue or overpaid, amber for anything else to chase, green for clear.
+- **Money** and **Selection** — paid out against what was granted, and how the cohort was chosen.
 
 ## Exporting to Excel
 
