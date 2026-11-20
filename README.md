@@ -46,19 +46,17 @@ Open the local URL. Sign in, edit something, refresh — it should persist.
 
 ## 4. Deploy
 
-### Netlify
-1. netlify.com → **Add new site → Import from GitHub** → pick `IF-Dashboard`.
-2. Build command `npm run build`, publish directory `dist` (the included `netlify.toml` sets this).
-3. **Site settings → Environment variables**: add
-   - `VITE_SUPABASE_URL` = `https://bgewhsybjymnohvmydqz.supabase.co`
-   - `VITE_SUPABASE_ANON_KEY` = your anon public key
-4. **Deploy**. You get a `something.netlify.app` URL.
+### Cloudflare Pages (current host — free)
+Live at **https://gcsifdashboard.pages.dev**. Cloudflare rebuilds and publishes automatically on every push to `master` (free plan: unlimited requests, 500 deploys/month).
 
-### Vercel (alternative — pick one, not both)
-Import the repo, add the same two environment variables, deploy. `vercel.json` handles routing.
+Setup, for reference (already done): Cloudflare → **Workers & Pages → Create → Pages → Import an existing Git repository** → `IF-Dashboard`, production branch `master`, build command `npm run build`, output directory `dist`, environment variables:
+- `VITE_SUPABASE_URL` = `https://bgewhsybjymnohvmydqz.supabase.co`
+- `VITE_SUPABASE_ANON_KEY` = your anon public key
+
+`public/_redirects` handles single-page routing. `vercel.json` is a legacy config for another host.
 
 ## 5. Point login back at your live URL
-Supabase → **Authentication → URL Configuration**: set **Site URL** to your Netlify/Vercel URL and add it to **Redirect URLs**. Otherwise the links in confirmation, invitation and password-reset emails lead to `localhost` instead of the app.
+Supabase → **Authentication → URL Configuration**: set **Site URL** to your live URL (`https://gcsifdashboard.pages.dev`) and add it to **Redirect URLs**. Otherwise the links in confirmation, invitation and password-reset emails lead to `localhost` instead of the app.
 
 Done — share the URL with your team. Every future `git push` redeploys automatically.
 
