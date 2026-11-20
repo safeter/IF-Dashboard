@@ -33,6 +33,7 @@ export function authMessage(error, during = "signin") {
     case "email_provider_disabled": return "Email sign-in is switched off. An admin can turn on Email in Supabase → Authentication → Sign In / Providers.";
     case "weak_password": return `Choose a stronger password. ${msg}`;
     case "same_password": return "That's already your password. Choose a new one.";
+    case "reauthentication_needed": return "For security, Supabase wants a fresh sign-in before a password change. Sign out, sign back in, and change it straight away.";
     case "email_address_invalid": return "That email address isn't accepted. Check it for typos.";
     case "email_address_not_authorized": return `Supabase couldn't email this address: its built-in email only reaches members of your Supabase team. To fix it, ${SMTP_HINT}.`;
     case "over_email_send_rate_limit": return `Too many emails for now: Supabase's built-in email sends only a few an hour. Try again later, or ${SMTP_HINT}.`;

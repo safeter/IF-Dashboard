@@ -6,6 +6,7 @@ import {
   conflictedSections, forceConflicts, dropConflicts,
 } from "./lib/cloud";
 import { supabase } from "./lib/supabase";
+import { authMessage, passwordProblem, MIN_PASSWORD } from "./lib/auth";
 import { T, PALETTE } from "./lib/theme";
 import { buildWorkbook, workbookName } from "./lib/exportWorkbook";
 import Dashboard from "./Dashboard";
@@ -36,7 +37,7 @@ import {
   UploadCloud, RefreshCw, CalendarCheck, Trophy, Pizza,
   CheckCircle2, Circle, Search, Award, Plus, Trash2, Pencil,
   ChevronDown, ChevronUp, Download, Upload, Settings, AlertTriangle, Users, BookOpen, Copy, Wallet,
-  PackageCheck, Inbox, ExternalLink, Ban, FileSpreadsheet, Mail, Printer, LogOut,
+  PackageCheck, Inbox, ExternalLink, Ban, FileSpreadsheet, Mail, Printer, LogOut, KeyRound,
 } from "lucide-react";
 
 /* ============================================================
@@ -1066,6 +1067,14 @@ export default function App() {
     return () => ro.disconnect();
   }, []);
   const [utilOpen, setUtilOpen] = useState(false);
+  /* Your own account: who is signed in, and a way to change the password
+     without going through an email (which the default mailer may never send). */
+  const [pwOpen, setPwOpen] = useState(false);
+  const [myEmail, setMyEmail] = useState("");
+  useEffect(() => {
+    if (!supabase) return;
+    supabase.auth.getSession().then(({ data }) => setMyEmail((data.session && data.session.user && data.session.user.email) || ""));
+  }, []);
   const activeCycle = cycles.find((c) => c.status === "active") || cycles[0] || SEED_CYCLES[0];
   const [viewCycleId, setViewCycleId] = useState(null); // null = follow the active cycle
   const cycleId = viewCycleId ?? activeCycle.id;
@@ -2329,6 +2338,16 @@ export default function App() {
           <input type="file" accept=".json,application/json" style={{ display: "none" }} onChange={(e) => { importAllFile(e.target.files[0]); e.target.value = ""; }} />
         </label>
       </div>
+      {supabase && myEmail && (
+        <div style={{ fontSize: 11.5, color: T.muted, marginTop: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={myEmail}>
+          Signed in as {myEmail}
+        </div>
+      )}
+      {supabase && (
+        <button className="mini" onClick={() => { setPwOpen(true); setUtilOpen(false); }} style={{ marginTop: 6, marginRight: 6 }} title="Choose a new password for your account">
+          <KeyRound size={11} style={{ verticalAlign: -1, marginRight: 4 }} />Change password
+        </button>
+      )}
       {supabase && (
         <button className="mini" onClick={() => supabase.auth.signOut()} style={{ marginTop: 6 }} title="Sign out of Innovation Fund Manager">
           <LogOut size={11} style={{ verticalAlign: -1, marginRight: 4 }} />Sign out
@@ -2375,6 +2394,7 @@ export default function App() {
     <div className="gcs" style={{ "--accent": accent, "--side-h": `${sideH}px` }}>
       <style>{STYLE}</style>
       <DialogHost />
+      {pwOpen && <PasswordDialog email={myEmail} onClose={() => setPwOpen(false)} />}
 
       {/* sidebar */}
       <aside className="side" ref={sideRef}>
@@ -4652,5 +4672,58 @@ function TrackerTab({ teams, items, setItems, onSet, onOpen, scopeNote }) {
         {hidden > 0 && <div style={{ fontSize: 11.5, color: T.muted, marginTop: 10 }}>{hidden} completed or withdrawn team{hidden === 1 ? " isn't" : "s aren't"} listed.</div>}
       </div>
     </>
+  );
+}
+
+/** Change your own password while signed in. Supabase updates the account the
+    session belongs to, so nobody can change someone else's from here. */
+function PasswordDialog({ email, onClose }) {
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape" && !busy) onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [busy, onClose]);
+  const save = async (e) => {
+    e.preventDefault();
+    if (busy) return;
+    const problem = passwordProblem(pw, pw2);
+    if (problem) { setErr(problem); return; }
+    setBusy(true); setErr("");
+    try {
+      const { error } = await supabase.auth.updateUser({ password: pw });
+      if (error) { setErr(authMessage(error, "password")); return; }
+      onClose();
+      ui.toast("Password changed. Use the new one next time you sign in.");
+    } catch (e2) {
+      setErr(authMessage(e2, "password"));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const field = { width: "100%", padding: "9px 11px", border: `1px solid ${T.hairline}`, borderRadius: 9, fontFamily: "inherit", fontSize: 14, background: T.surface, color: T.ink };
+  return (
+    <div onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}
+      style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(50,48,47,.35)", display: "grid", placeItems: "center", padding: 16 }}>
+      <form role="dialog" aria-modal="true" aria-labelledby="pwtitle" onSubmit={save} noValidate className="card"
+        style={{ width: "min(400px, 100%)", padding: 24, boxShadow: "0 18px 50px rgba(0,0,0,.18)" }}>
+        <h2 id="pwtitle" className="disp" style={{ fontSize: 18, fontWeight: 700 }}>Change your password</h2>
+        {email && <p style={{ fontSize: 13, color: T.muted, margin: "4px 0 16px" }}>For {email}.</p>}
+        <input type="email" autoComplete="username" value={email || ""} readOnly hidden />
+        <label style={{ display: "block", fontSize: 12.5, fontWeight: 600, marginBottom: 5 }} htmlFor="pw-new">New password</label>
+        <input id="pw-new" type="password" autoComplete="new-password" value={pw} onChange={(e) => setPw(e.target.value)} autoFocus style={field} aria-describedby="pw-hint" />
+        <div id="pw-hint" style={{ fontSize: 12, color: T.muted, margin: "4px 0 12px" }}>At least {MIN_PASSWORD} characters.</div>
+        <label style={{ display: "block", fontSize: 12.5, fontWeight: 600, marginBottom: 5 }} htmlFor="pw-again">Confirm password</label>
+        <input id="pw-again" type="password" autoComplete="new-password" value={pw2} onChange={(e) => setPw2(e.target.value)} style={field} />
+        {err && <div role="alert" style={{ fontSize: 13, color: T.dangerInk, marginTop: 12, lineHeight: 1.45 }}>{err}</div>}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+          <button type="button" className="btn ghost" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="submit" className="btn" disabled={busy}>{busy ? "Saving…" : "Save password"}</button>
+        </div>
+      </form>
+    </div>
   );
 }
